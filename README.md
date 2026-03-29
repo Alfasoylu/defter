@@ -42,10 +42,15 @@ SALES_REPORT_PATH=
 DRY_RUN=true
 ```
 
+
 ## 6. Güvenlik Notu
 
-- Gerçek OAuth key, token, credentials ve .env dosyaları commit edilmez.
-- Repo içinde sadece örnek env bulunur.
+- Gerçek OAuth client secret (creds.json), service account dosyası ve .env dosyaları **commit edilmez**.
+- creds.json (OAuth client credentials) sadece Apps Script geliştirme/deploy için kullanılır, **runtime'da dış scriptlerde kullanılmaz**.
+- Dış scriptler (ör: upload-excel.js) sadece service account ile çalışır.
+- Service account JSON dosyası repoya konmaz, .env ile path olarak referans verilir.
+- Google Sheet, service account'ın `client_email` adresiyle paylaşılmalıdır.
+- Repo içinde sadece örnek env (.env.example) bulunur.
 
 ## 7. Örnek Veri Açıklaması
 

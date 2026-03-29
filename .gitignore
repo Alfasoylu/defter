@@ -12,6 +12,9 @@ service-account.json
 *.key
 *.pem
 
+# Google OAuth client secret (runtime için kullanılmaz, repoda tutulmaz)
+creds.json
+
 # Google / API auth
 .oauth
 tokens/

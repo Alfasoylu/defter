@@ -6,11 +6,12 @@
 - Kod Google hesabı ile çalışır, service account desteği yoktur.
 - clasp sadece geliştirme/deploy için kullanılır, runtime auth değildir.
 
+
 ## Node/Scripts Auth
 
-- Tüm dış scriptler (ör: upload-excel.js) Google Sheets API'ye service account ile erişir.
-- Kullanıcı OAuth/token bağımlılığı kaldırılır.
-- Service account dosyası (json) ve env değişkeni ile kimlik doğrulama yapılır.
+- Tüm dış scriptler (ör: upload-excel.js) Google Sheets API'ye **sadece service account** ile erişir.
+- Kullanıcı OAuth/token veya OAuth client secret (creds.json) **runtime'da kullanılmaz**.
+- Service account dosyası (JSON) ve env değişkeni ile kimlik doğrulama yapılır.
 
 ## Runtime vs Development Auth
 
@@ -26,11 +27,12 @@
 - Auth, Apps Script runtime tarafından otomatik olarak kullanıcı hesabı ile yönetilir (OAuth2, ScriptApp.getOAuthToken() veya service account kullanılmaz).
 - Geliştirme ve deploy için clasp kullanılır, ancak runtime'da kullanıcıdan ek auth gerekmez.
 
+
 ## 2. Node/Scripts Tarafı
 
-- Tüm dış scriptler (ör: upload-excel.js) Google Sheets API'ye erişmek için service account kullanır.
+- Tüm dış scriptler (ör: upload-excel.js) Google Sheets API'ye erişmek için **yalnızca service account** kullanır.
 - Auth için google.auth.GoogleAuth ve SERVICE_ACCOUNT_FILE (JSON) kullanılır.
-- Kullanıcı OAuth tokenı veya .clasprc.json ile alınan tokenlar kullanılmaz.
+- Kullanıcı OAuth tokenı, .clasprc.json veya OAuth client secret (creds.json) **kullanılmaz**.
 - Tüm erişimler env ile belirlenen sheet id'lerine yapılır (SHEET_ID, TEST_SHEET_ID).
 
 ## 3. Runtime vs Development Auth
@@ -39,8 +41,10 @@
 - Runtime: Dış scriptler sadece service account ile çalışır, kullanıcı OAuth tokenı gerekmez.
 - Service account dosyası ve env değişkenleri olmadan dış scriptler çalışmaz.
 
+
 ## 4. Güvenlik
 
 - Service account dosyası ve sheet id'leri .env ve .gitignore ile korunur.
+- creds.json (OAuth client credentials) **sadece Apps Script geliştirme/deploy** için kullanılır, repoda tutulmaz, runtime'da kullanılmaz.
 - Production sheet'e yazmak için ALLOW_PROD_WRITE=true flag'i zorunludur.
 - DRY_RUN, test ve prod ortam ayrımı env ile yönetilir.
