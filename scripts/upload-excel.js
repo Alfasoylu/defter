@@ -131,21 +131,29 @@ function readExcel(filePath) {
   return XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
 }
 
-async function writeToSheet(sheets, spreadsheetId, sheetName, rows, options = {}) {
-    // Yardımcı: hücre değerini normalize et
-    function normalizeCellValue(val) {
-      if (val === null || typeof val === 'undefined') return "";
-      if (typeof val === 'string') return val.trim();
-      if (typeof val === 'number' || typeof val === 'boolean') return String(val);
-      return String(val);
-    }
+async function writeToSheet(
+  sheets,
+  spreadsheetId,
+  sheetName,
+  rows,
+  options = {},
+) {
+  // Yardımcı: hücre değerini normalize et
+  function normalizeCellValue(val) {
+    if (val === null || typeof val === "undefined") return "";
+    if (typeof val === "string") return val.trim();
+    if (typeof val === "number" || typeof val === "boolean") return String(val);
+    return String(val);
+  }
   // Sheet ID whitelist kontrolü
   if (!SHEET_ID_WHITELIST.includes(spreadsheetId)) {
     fail(`Sheet ID whitelist dışı: ${spreadsheetId}`);
   }
   // Tab whitelist kontrolü
   if (!TAB_WHITELIST.includes(sheetName)) {
-    fail(`Tab whitelist dışı: '${sheetName}'. Sadece şu tablara yazılabilir: ${TAB_WHITELIST.join(", ")}`);
+    fail(
+      `Tab whitelist dışı: '${sheetName}'. Sadece şu tablara yazılabilir: ${TAB_WHITELIST.join(", ")}`,
+    );
   }
   // Gerçek sheet header'ını oku ve doğrula
   let sheetHeader = [];
@@ -156,15 +164,24 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows, options = {}
     });
     sheetHeader = headerRes.data.values ? headerRes.data.values[0] : [];
   } catch (e) {
-    fail(`[HEADER READ FAIL] Tab '${sheetName}' header okunamadı: ${e.message}`);
+    fail(
+      `[HEADER READ FAIL] Tab '${sheetName}' header okunamadı: ${e.message}`,
+    );
   }
   const expectedHeader = ["Ürün Kodu", "Ürün Adı", "Stok1"];
   const headerMismatch = expectedHeader.filter((h, i) => h !== sheetHeader[i]);
-  if (headerMismatch.length > 0 || sheetHeader.length !== expectedHeader.length) {
-    console.error(`[HEADER MISMATCH] Beklenen: ${JSON.stringify(expectedHeader)}, Gerçek: ${JSON.stringify(sheetHeader)}`);
+  if (
+    headerMismatch.length > 0 ||
+    sheetHeader.length !== expectedHeader.length
+  ) {
+    console.error(
+      `[HEADER MISMATCH] Beklenen: ${JSON.stringify(expectedHeader)}, Gerçek: ${JSON.stringify(sheetHeader)}`,
+    );
     for (let i = 0; i < expectedHeader.length; i++) {
       if (expectedHeader[i] !== sheetHeader[i]) {
-        console.error(`  Kolon ${i + 1}: Beklenen='${expectedHeader[i]}', Gerçek='${sheetHeader[i] || "(eksik)"}'`);
+        console.error(
+          `  Kolon ${i + 1}: Beklenen='${expectedHeader[i]}', Gerçek='${sheetHeader[i] || "(eksik)"}'`,
+        );
       }
     }
     fail("Header eşleşmiyor, yazma iptal edildi.");
@@ -174,7 +191,9 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows, options = {}
   const inputHeader = rows[0];
   for (let i = 0; i < inputHeader.length; i++) {
     if (!allowedColumns.includes(inputHeader[i])) {
-      fail(`[KOLON WHITELIST] '${inputHeader[i]}' kolonuna yazmak yasak! Sadece: ${allowedColumns.join(", ")}`);
+      fail(
+        `[KOLON WHITELIST] '${inputHeader[i]}' kolonuna yazmak yasak! Sadece: ${allowedColumns.join(", ")}`,
+      );
     }
   }
   // Batch limit
@@ -197,7 +216,9 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows, options = {}
       spreadsheetId,
       range: `${sheetName}!A1:C${dataEndRow}`,
     });
-    console.log(`[INFO] Overwrite: ${sheetName}!A1:C${dataEndRow} aralığı temizlendi.`);
+    console.log(
+      `[INFO] Overwrite: ${sheetName}!A1:C${dataEndRow} aralığı temizlendi.`,
+    );
   } catch (e) {
     console.log(`[WARN] Temizleme başarısız: ${e.message}`);
   }
@@ -316,14 +337,20 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows, options = {}
       const expected = normalizeCellValue(limitedRows[0][j]);
       const actual = normalizeCellValue(headerRow[j]);
       if (expected !== actual) {
-        console.error(`[HEADER MISMATCH] Kolon ${j + 1} (${limitedRows[0][j]}): expected='${expected}', actual='${actual}', range=${headerRange}`);
+        console.error(
+          `[HEADER MISMATCH] Kolon ${j + 1} (${limitedRows[0][j]}): expected='${expected}', actual='${actual}', range=${headerRange}`,
+        );
         headerMismatch = true;
       }
     }
     if (headerMismatch) {
-      console.error(`[HEADER FAIL] Header satırı eşleşmiyor! Range: ${headerRange}`);
+      console.error(
+        `[HEADER FAIL] Header satırı eşleşmiyor! Range: ${headerRange}`,
+      );
     } else {
-      console.log(`[HEADER PASS] Header satırı eşleşiyor. Range: ${headerRange}`);
+      console.log(
+        `[HEADER PASS] Header satırı eşleşiyor. Range: ${headerRange}`,
+      );
     }
     // Data doğrulama
     const dataRead = await sheets.spreadsheets.values.get({
@@ -333,24 +360,36 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows, options = {}
     const dataRows = dataRead.data.values || [];
     let dataMismatch = false;
     if (limitedRows.length - 1 !== dataRows.length) {
-      console.error(`[DATA MISMATCH] Satır sayısı farklı! Beklenen=${limitedRows.length - 1}, Okunan=${dataRows.length}, range=${dataRange}`);
+      console.error(
+        `[DATA MISMATCH] Satır sayısı farklı! Beklenen=${limitedRows.length - 1}, Okunan=${dataRows.length}, range=${dataRange}`,
+      );
       dataMismatch = true;
     }
-    for (let i = 0; i < Math.min(limitedRows.length - 1, dataRows.length); i++) {
+    for (
+      let i = 0;
+      i < Math.min(limitedRows.length - 1, dataRows.length);
+      i++
+    ) {
       const expectedRow = limitedRows[i + 1].map(normalizeCellValue);
       const actualRow = (dataRows[i] || []).map(normalizeCellValue);
       for (let j = 0; j < expectedRow.length; j++) {
         if (expectedRow[j] !== actualRow[j]) {
-          console.error(`[DATA MISMATCH] Satır ${i + 2}, Kolon ${j + 1} (${limitedRows[0][j]}): expected='${expectedRow[j]}', actual='${actualRow[j]}', range=${dataRange}`);
+          console.error(
+            `[DATA MISMATCH] Satır ${i + 2}, Kolon ${j + 1} (${limitedRows[0][j]}): expected='${expectedRow[j]}', actual='${actualRow[j]}', range=${dataRange}`,
+          );
           dataMismatch = true;
         }
       }
     }
     if (dataMismatch) {
-      console.error(`[DATA FAIL] Data satırları eşleşmiyor! Range: ${dataRange}`);
+      console.error(
+        `[DATA FAIL] Data satırları eşleşmiyor! Range: ${dataRange}`,
+      );
       fail("Yazılan veri ile okunan veri normalize edilmiş olarak eşleşmiyor!");
     } else {
-      console.log(`[DATA PASS] Data satırları normalize edilmiş olarak birebir eşleşiyor. Range: ${dataRange}`);
+      console.log(
+        `[DATA PASS] Data satırları normalize edilmiş olarak birebir eşleşiyor. Range: ${dataRange}`,
+      );
     }
     // İlk 3 gerçek satırı göster
     console.log("İlk 3 gerçek satır:");
@@ -396,7 +435,7 @@ async function main() {
   const mapping = {
     "Ürün Kodu": stockHeaders.indexOf("Ürün Kodu"),
     "Ürün Adı": stockHeaders.indexOf("Ürün Adı"),
-    "Stok1": stockHeaders.indexOf("Stok1"),
+    Stok1: stockHeaders.indexOf("Stok1"),
   };
   // Mapping raporu
   console.log("A) Kaynak kolon → hedef kolon eşleşmesi:");
@@ -414,27 +453,53 @@ async function main() {
     const urunAdi = (row[mapping["Ürün Adı"]] || "").toString().trim();
     let stok1 = row[mapping["Stok1"]];
     // Temizleme
-    if (!urunKodu) { skipped.push({i, reason: "Boş ürün kodu"}); continue; }
-    if (!urunAdi) { skipped.push({i, reason: "Boş ürün adı"}); continue; }
+    if (!urunKodu) {
+      skipped.push({ i, reason: "Boş ürün kodu" });
+      continue;
+    }
+    if (!urunAdi) {
+      skipped.push({ i, reason: "Boş ürün adı" });
+      continue;
+    }
     if (stok1 === null || stok1 === undefined || stok1 === "") stok1 = 0;
-    if (typeof stok1 === "string" && stok1.replace) stok1 = stok1.replace(/[^0-9.,-]/g, "").replace(",", ".");
+    if (typeof stok1 === "string" && stok1.replace)
+      stok1 = stok1.replace(/[^0-9.,-]/g, "").replace(",", ".");
     stok1 = Number(stok1);
-    if (isNaN(stok1)) { skipped.push({i, reason: "Stok1 sayı değil"}); continue; }
-    if (seenSkus.has(urunKodu)) { skipped.push({i, reason: "Duplicate ürün kodu"}); continue; }
+    if (isNaN(stok1)) {
+      skipped.push({ i, reason: "Stok1 sayı değil" });
+      continue;
+    }
+    if (seenSkus.has(urunKodu)) {
+      skipped.push({ i, reason: "Duplicate ürün kodu" });
+      continue;
+    }
     seenSkus.add(urunKodu);
     cleanRows.push([urunKodu, urunAdi, stok1]);
-    if (cleanRows.length >= 100) break;
+    // FULL IMPORT: batch limiti yok
   }
   // Header ekle
   const finalRows = [["Ürün Kodu", "Ürün Adı", "Stok1"], ...cleanRows];
 
+  // Ek kontrol: unique ürün kodu sayısı
+  const allSkus = new Set();
+  for (let i = 1; i < stockData.length; i++) {
+    const row = stockData[i];
+    const urunKodu = (row[mapping["Ürün Kodu"]] || "").toString().trim();
+    if (urunKodu) allSkus.add(urunKodu);
+  }
+  const writtenSkus = new Set(cleanRows.map((r) => r[0]));
+
   // Veri kalite kontrol ve snapshot
   console.log("B) Toplam kaynak satır:", stockData.length - 1);
+  console.log("B2) Unique ürün kodu (kaynak):", allSkus.size);
   console.log("C) İşlenen satır sayısı:", cleanRows.length);
+  console.log("C2) Unique ürün kodu (yazılan):", writtenSkus.size);
   console.log("D) Atlanan satır sayısı:", skipped.length);
   if (skipped.length > 0) {
     const reasons = {};
-    skipped.forEach(s => { reasons[s.reason] = (reasons[s.reason] || 0) + 1; });
+    skipped.forEach((s) => {
+      reasons[s.reason] = (reasons[s.reason] || 0) + 1;
+    });
     Object.entries(reasons).forEach(([r, n]) => console.log(`   ${r}: ${n}`));
   }
   // Write öncesi snapshot/log
@@ -443,25 +508,31 @@ async function main() {
   const writeRange = `Stok Envanter!A${writeStart}:C${writeEnd}`;
   console.log("--- WRITE SNAPSHOT ---");
   console.log(`Target tab: Stok Envanter`);
-  console.log(`Exact write range: ${writeRange}`);
-  console.log(`Satır sayısı: ${cleanRows.length}`);
-  console.log(`Kolonlar: Ürün Kodu, Ürün Adı, Stok1`);
+  console.log(`Header range: Stok Envanter!A1:C1`);
+  console.log(`Exact data write range: ${writeRange}`);
+  console.log(`Toplam işlenecek satır: ${cleanRows.length}`);
   console.log("İlk 5 örnek:");
-  for (let i = 0; i < Math.min(5, cleanRows.length); i++) console.log(cleanRows[i]);
+  for (let i = 0; i < Math.min(5, cleanRows.length); i++)
+    console.log(cleanRows[i]);
   console.log("Son 5 örnek:");
-  for (let i = Math.max(0, cleanRows.length - 5); i < cleanRows.length; i++) console.log(cleanRows[i]);
+  for (let i = Math.max(0, cleanRows.length - 5); i < cleanRows.length; i++)
+    console.log(cleanRows[i]);
 
   // Write & doğrulama
-  await writeToSheet(sheets, spreadsheetId, prodTestTab, finalRows, { batchSize: 100 });
+  await writeToSheet(sheets, spreadsheetId, prodTestTab, finalRows, {
+    batchSize: cleanRows.length,
+  });
 
   console.log("\nF) Write/read sonucu ve kalan riskler üstte loglandı.");
   console.log("G) Kalan riskler:");
   console.log("- Full import engelli, batch limiti ve whitelist korunuyor.");
   console.log("- Header guard, kolon guard ve tab guard aktif.");
-  console.log("- Google Sheets API sayısal değerleri string döndürdüğü için normalize karşılaştırma zorunlu.");
+  console.log(
+    "- Google Sheets API sayısal değerleri string döndürdüğü için normalize karşılaştırma zorunlu.",
+  );
   console.log("- Formül kolonlarına yazma hâlâ engelli.");
   console.log("- .env ve token dosyası güvenli tutulmalı.");
-  console.log("\n═══ TAMAMLANDI (100'LÜK GERÇEK VERİ BATCH IMPORT) ═══\n");
+  console.log("\n═══ TAMAMLANDI (FULL STOK ENVANTER IMPORT) ═══\n");
 }
 
 main().catch((e) => fail(e.message));
