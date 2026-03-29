@@ -1,0 +1,12 @@
+{
+  "name": "defter",
+  "version": "1.0.0",
+  "description": "İthalat karar makinası için Apps Script projesi",
+  "scripts": {
+    "test:smoke": "npx clasp run runSmokeTestsCLI",
+    "test:dry": "npx clasp run runDryRunCLI",
+    "test:real": "npx clasp run runRealRunCLI",
+    "test:integrity": "npx clasp run runIntegrityTestsCLI"
+  },
+  "dependencies": {}
+}

@@ -5,31 +5,48 @@
  * Kullanim: node scripts/upload-excel.js
  */
 
+
 const path = require("path");
-const os = require("os");
+const fs = require("fs");
 const XLSX = require("xlsx");
 const { google } = require("googleapis");
+require("dotenv").config({ path: path.join(__dirname, "../.env") });
 
 const ROOT = path.resolve(__dirname, "..");
-const SALES_FILE = path.join(ROOT, "docs", "entegra-sales-0101.2025-27.03.2026.xlsx");
-const STOCK_FILE = path.join(ROOT, "docs", "stok-listesi-29.03.2026.xlsx");
-const SPREADSHEET_ID = "1PeLF3CGuVZgHwrKiWhmr2Q9owMaElXtHVa5CTQzwUfc";
+const SALES_FILE = process.env.SALES_REPORT_PATH || path.join(ROOT, "docs", "entegra-sales-0101.2025-27.03.2026.xlsx");
+const STOCK_FILE = process.env.STOCK_FILE_PATH || path.join(ROOT, "docs", "stok-listesi-29.03.2026.xlsx");
+const SERVICE_ACCOUNT_FILE = process.env.SERVICE_ACCOUNT_FILE;
+const SHEET_ID = process.env.SHEET_ID;
+const TEST_SHEET_ID = process.env.TEST_SHEET_ID;
+const DRY_RUN = process.env.DRY_RUN;
+const ALLOW_PROD_WRITE = process.env.ALLOW_PROD_WRITE === "true";
+
+function fail(msg) {
+  console.error("[FATAL] " + msg);
+  process.exit(1);
+}
+
+function getTargetSheetId() {
+  if (!DRY_RUN) fail("DRY_RUN env zorunlu (true/false)");
+  if (DRY_RUN === "true") {
+    if (!TEST_SHEET_ID) fail("TEST_SHEET_ID env zorunlu (DRY_RUN=true)");
+    return TEST_SHEET_ID;
+  } else {
+    if (!SHEET_ID) fail("SHEET_ID env zorunlu (DRY_RUN=false)");
+    if (!ALLOW_PROD_WRITE) fail("Prod sheet'e yazmak için ALLOW_PROD_WRITE=true olmalı");
+    return SHEET_ID;
+  }
+}
 
 async function getAuth() {
-  const clasprc = require(path.join(os.homedir(), ".clasprc.json"));
-  const creds = clasprc.tokens.default;
-
-  const oauth2Client = new google.auth.OAuth2(
-    creds.client_id,
-    creds.client_secret
-  );
-  oauth2Client.setCredentials({
-    access_token: creds.access_token,
-    refresh_token: creds.refresh_token,
-    token_type: creds.token_type,
-    expiry_date: creds.expiry_date,
+  if (!SERVICE_ACCOUNT_FILE || !fs.existsSync(SERVICE_ACCOUNT_FILE)) {
+    fail("SERVICE_ACCOUNT_FILE bulunamadı veya erişilemiyor: " + SERVICE_ACCOUNT_FILE);
+  }
+  const auth = new google.auth.GoogleAuth({
+    keyFile: SERVICE_ACCOUNT_FILE,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"]
   });
-  return oauth2Client;
+  return await auth.getClient();
 }
 
 function readExcel(filePath) {
@@ -38,18 +55,17 @@ function readExcel(filePath) {
   return XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
 }
 
-async function writeToSheet(sheets, sheetName, rows) {
+async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
   // Get sheet metadata to find sheetId and expand if needed
   const meta = await sheets.spreadsheets.get({
-    spreadsheetId: SPREADSHEET_ID,
+    spreadsheetId,
     fields: "sheets.properties",
   });
   const sheetMeta = meta.data.sheets.find(
     s => s.properties.title === sheetName
   );
   if (!sheetMeta) {
-    console.log(`  ✗ Sheet '${sheetName}' bulunamadi!`);
-    return;
+    fail(`  ✗ Sheet '${sheetName}' bulunamadi!`);
   }
   const sheetId = sheetMeta.properties.sheetId;
   const currentRows = sheetMeta.properties.gridProperties.rowCount;
@@ -78,7 +94,7 @@ async function writeToSheet(sheets, sheetName, rows) {
   if (requests.length > 0) {
     console.log(`  Grid genisletiliyor: ${neededRows} satir x ${Math.max(currentCols, neededCols)} kolon`);
     await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
+      spreadsheetId,
       requestBody: { requests },
     });
   }
@@ -86,7 +102,7 @@ async function writeToSheet(sheets, sheetName, rows) {
   // Clear existing data
   try {
     await sheets.spreadsheets.values.clear({
-      spreadsheetId: SPREADSHEET_ID,
+      spreadsheetId,
       range: `'${sheetName}'!A:ZZ`,
     });
   } catch (e) {
@@ -101,7 +117,7 @@ async function writeToSheet(sheets, sheetName, rows) {
     const range = `'${sheetName}'!A${startRow}`;
     console.log(`  Yaziliyor: ${sheetName} [${i + 1}-${Math.min(i + BATCH, rows.length)} / ${rows.length}]`);
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
+      spreadsheetId,
       range: range,
       valueInputOption: "RAW",
       requestBody: { values: batch },
@@ -113,13 +129,14 @@ async function writeToSheet(sheets, sheetName, rows) {
 async function main() {
   const auth = await getAuth();
   const sheets = google.sheets({ version: "v4", auth });
+  const spreadsheetId = getTargetSheetId();
 
   // ─── SATIS VERISI ─────────────────────────────────────────────────────
   console.log("\n═══ SATIS VERİSİ ═══");
   console.log(`Kaynak: ${path.basename(SALES_FILE)}`);
   const salesData = readExcel(SALES_FILE);
   console.log(`Satir: ${salesData.length - 1}, Kolon: ${salesData[0].length}`);
-  await writeToSheet(sheets, "_IMPORT_SALES", salesData);
+  await writeToSheet(sheets, spreadsheetId, "_IMPORT_SALES", salesData);
 
   // ─── STOK VERISI ──────────────────────────────────────────────────────
   console.log("\n═══ STOK VERİSİ ═══");
@@ -138,7 +155,7 @@ async function main() {
   const keepIdx = keepCols.map(name => stockHeaders.indexOf(name)).filter(i => i >= 0);
   const filteredStock = stockData.map(row => keepIdx.map(i => row[i] != null ? row[i] : ""));
   console.log(`Filtrelenmis kolon: ${keepIdx.length} / ${stockHeaders.length}`);
-  await writeToSheet(sheets, "_IMPORT_STOCK", filteredStock);
+  await writeToSheet(sheets, spreadsheetId, "_IMPORT_STOCK", filteredStock);
 
   console.log("\n═══ TAMAMLANDI ═══\n");
 }

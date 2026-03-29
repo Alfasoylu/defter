@@ -380,6 +380,9 @@ Mevcut Google Sheets ve Apps Script yapısının envanterini çıkarmak, hatalı
 - [ ] Duplicate üreten noktaları tespit et
 - [ ] Tarih format bozulmalarını tespit et
 - [ ] Grafik veri kaynaklarını doğrula
+- [ ] test coverage artır
+- [ ] fail durumunda otomatik rollback
+- [ ] log dosyasını tarih bazlı sakla
 
 ## Çıktılar
 - `docs/current-state-audit.md`
