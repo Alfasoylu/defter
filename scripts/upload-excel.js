@@ -29,6 +29,8 @@ const ALLOW_PROD_WRITE = process.env.ALLOW_PROD_WRITE === "true";
 
 // Whitelist: sadece bu sheet id'lere yazılabilir
 const SHEET_ID_WHITELIST = [SHEET_ID, TEST_SHEET_ID].filter(Boolean);
+// Tab whitelist: sadece bu tablara yazılabilir
+const TAB_WHITELIST = ["TEST_WRITE", "Stok Envanter", "Stok Hareketleri"];
 
 // Güvenlik: DRY_RUN, TEST_SHEET_ID, OAUTH_CLIENT_SECRET_FILE zorunlu
 function fail(msg) {
@@ -129,11 +131,66 @@ function readExcel(filePath) {
   return XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
 }
 
-async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
-  // Whitelist kontrolü
+async function writeToSheet(sheets, spreadsheetId, sheetName, rows, options = {}) {
+    // Yardımcı: hücre değerini normalize et
+    function normalizeCellValue(val) {
+      if (val === null || typeof val === 'undefined') return "";
+      if (typeof val === 'string') return val.trim();
+      if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+      return String(val);
+    }
+  // Sheet ID whitelist kontrolü
   if (!SHEET_ID_WHITELIST.includes(spreadsheetId)) {
     fail(`Sheet ID whitelist dışı: ${spreadsheetId}`);
   }
+  // Tab whitelist kontrolü
+  if (!TAB_WHITELIST.includes(sheetName)) {
+    fail(`Tab whitelist dışı: '${sheetName}'. Sadece şu tablara yazılabilir: ${TAB_WHITELIST.join(", ")}`);
+  }
+  // Gerçek sheet header'ını oku ve doğrula
+  let sheetHeader = [];
+  try {
+    const headerRes = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${sheetName}!A1:Z1`,
+    });
+    sheetHeader = headerRes.data.values ? headerRes.data.values[0] : [];
+  } catch (e) {
+    fail(`[HEADER READ FAIL] Tab '${sheetName}' header okunamadı: ${e.message}`);
+  }
+  const expectedHeader = ["Ürün Kodu", "Ürün Adı", "Stok1"];
+  const headerMismatch = expectedHeader.filter((h, i) => h !== sheetHeader[i]);
+  if (headerMismatch.length > 0 || sheetHeader.length !== expectedHeader.length) {
+    console.error(`[HEADER MISMATCH] Beklenen: ${JSON.stringify(expectedHeader)}, Gerçek: ${JSON.stringify(sheetHeader)}`);
+    for (let i = 0; i < expectedHeader.length; i++) {
+      if (expectedHeader[i] !== sheetHeader[i]) {
+        console.error(`  Kolon ${i + 1}: Beklenen='${expectedHeader[i]}', Gerçek='${sheetHeader[i] || "(eksik)"}'`);
+      }
+    }
+    fail("Header eşleşmiyor, yazma iptal edildi.");
+  }
+  // Kolon whitelist: sadece belirli kolonlara yazılabilir
+  const allowedColumns = expectedHeader;
+  const inputHeader = rows[0];
+  for (let i = 0; i < inputHeader.length; i++) {
+    if (!allowedColumns.includes(inputHeader[i])) {
+      fail(`[KOLON WHITELIST] '${inputHeader[i]}' kolonuna yazmak yasak! Sadece: ${allowedColumns.join(", ")}`);
+    }
+  }
+  // Batch limit
+  const BATCH_SIZE = options.batchSize || 20;
+  const limitedRows = [rows[0], ...rows.slice(1, BATCH_SIZE + 1)];
+  // Preview/önizleme
+  console.log("\n--- YAZMA ÖNİZLEME ---");
+  console.log(`Hedef spreadsheet id: ${spreadsheetId}`);
+  console.log(`Hedef tab: ${sheetName}`);
+  console.log(`Yazılacak satır sayısı: ${limitedRows.length - 1}`);
+  console.log(`Yazılacak kolonlar: ${inputHeader.join(", ")}`);
+  console.log("İlk 5 örnek satır:");
+  for (let i = 1; i <= Math.min(5, limitedRows.length - 1); i++) {
+    console.log(limitedRows[i]);
+  }
+  // Onay gerekmez, otomatik devam
   // Get sheet metadata to find sheetId and expand if needed
   const meta = await sheets.spreadsheets.get({
     spreadsheetId,
@@ -148,9 +205,8 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
   const sheetId = sheetMeta.properties.sheetId;
   const currentRows = sheetMeta.properties.gridProperties.rowCount;
   const currentCols = sheetMeta.properties.gridProperties.columnCount;
-  const neededRows = rows.length + 10;
-  const neededCols = rows[0].length + 2;
-
+  const neededRows = limitedRows.length + 10;
+  const neededCols = limitedRows[0].length + 2;
   // Expand grid if needed
   const requests = [];
   if (currentRows < neededRows) {
@@ -184,7 +240,6 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
       requestBody: { requests },
     });
   }
-
   // Clear existing data
   try {
     await sheets.spreadsheets.values.clear({
@@ -194,41 +249,68 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
   } catch (e) {
     console.log(`  (${sheetName} temizleme atlandi: ${e.message})`);
   }
-
-  // Write in batches
-  const BATCH = 500;
-  for (let i = 0; i < rows.length; i += BATCH) {
-    const batch = rows.slice(i, i + BATCH);
-    const startRow = i + 1;
-    const range = `'${sheetName}'!A${startRow}`;
-    if (DRY_RUN === "true") {
+  // Write
+  if (DRY_RUN === "true") {
+    console.log(
+      `[DRY RUN] mode: dry-run | target spreadsheet: ${spreadsheetId} | tab: ${sheetName} | rows: ${limitedRows.length}`,
+    );
+  } else {
+    console.log(
+      `[REAL RUN] mode: real-run | target spreadsheet: ${spreadsheetId} | tab: ${sheetName} | rows: ${limitedRows.length}`,
+    );
+    try {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `'${sheetName}'!A1`,
+        valueInputOption: "RAW",
+        requestBody: { values: limitedRows },
+      });
       console.log(
-        `[DRY RUN] mode: dry-run | target spreadsheet: ${spreadsheetId} | tab: ${sheetName} | rows: ${batch.length}`,
+        `[SUCCESS] ${sheetName} [1-${limitedRows.length} / ${limitedRows.length}] yazıldı.`,
       );
-    } else {
-      console.log(
-        `[REAL RUN] mode: real-run | target spreadsheet: ${spreadsheetId} | tab: ${sheetName} | rows: ${batch.length}`,
+    } catch (err) {
+      console.error(
+        `[FAIL] ${sheetName} [1-${limitedRows.length} / ${limitedRows.length}]: ${err.message}`,
       );
-      try {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId,
-          range: range,
-          valueInputOption: "RAW",
-          requestBody: { values: batch },
-        });
-        console.log(
-          `[SUCCESS] ${sheetName} [${i + 1}-${Math.min(i + BATCH, rows.length)} / ${rows.length}] yazıldı.`,
-        );
-      } catch (err) {
-        console.error(
-          `[FAIL] ${sheetName} [${i + 1}-${Math.min(i + BATCH, rows.length)} / ${rows.length}]: ${err.message}`,
-        );
-      }
     }
   }
-  console.log(
-    `  ✓ ${sheetName}: ${rows.length - 1} veri satırı ${DRY_RUN === "true" ? "(DRY RUN)" : "yazıldı"}`,
-  );
+  // Write sonrası doğrulama
+  try {
+    const readBack = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${sheetName}!A1:C${Math.min(limitedRows.length, 20)}`,
+    });
+    const readRows = readBack.data.values || [];
+    console.log("\n--- YAZIM SONRASI DOĞRULAMA ---");
+    for (let i = 0; i < Math.min(3, readRows.length); i++) {
+      console.log(readRows[i]);
+    }
+    // Write/read normalize eşleşme kontrolü
+    let mismatch = false;
+    if (limitedRows.length !== readRows.length) {
+      console.error(`[MISMATCH] Satır sayısı farklı! Beklenen=${limitedRows.length}, Okunan=${readRows.length}`);
+      mismatch = true;
+    }
+    for (let i = 0; i < Math.min(limitedRows.length, readRows.length); i++) {
+      const expectedRow = limitedRows[i].map(normalizeCellValue);
+      const actualRow = (readRows[i] || []).map(normalizeCellValue);
+      if (expectedRow.length !== actualRow.length) {
+        console.error(`[MISMATCH] Satır ${i + 1}: Kolon sayısı farklı! Beklenen=${expectedRow.length}, Okunan=${actualRow.length}`);
+        mismatch = true;
+        continue;
+      }
+      for (let j = 0; j < expectedRow.length; j++) {
+        if (expectedRow[j] !== actualRow[j]) {
+          console.error(`[MISMATCH] Satır ${i + 1}, Kolon ${j + 1}: Beklenen='${expectedRow[j]}', Okunan='${actualRow[j]}'`);
+          mismatch = true;
+        }
+      }
+    }
+    if (mismatch) fail("Yazılan veri ile okunan veri normalize edilmiş olarak eşleşmiyor!");
+    else console.log("[DOĞRULAMA] Yazılan veri ile okunan veri normalize edilmiş olarak birebir eşleşiyor.");
+  } catch (e) {
+    console.error(`[DOĞRULAMA HATASI] Okuma başarısız: ${e.message}`);
+  }
 }
 
 async function main() {
@@ -254,55 +336,22 @@ async function main() {
   const auth = await getAuth(); // (Service account getAuth fonksiyonu kaldırıldı, bu satırda hata verecektir)
   const sheets = google.sheets({ version: "v4", auth });
 
-  // --- TEST YAZMA SEKME KONTROLÜ ---
-  const testTab = "TEST_WRITE";
-  console.log(`\nHedef sheet/tab: ${testTab}`);
+  // --- KONTROLLÜ PROD TEST: Küçük veri seti ve hedef tab ---
+  const prodTestTab = "Stok Envanter";
+  console.log(`\nHedef sheet/tab: ${prodTestTab}`);
 
-  // --- SATIS VERISI ---
-  console.log("\n═══ SATIS VERİSİ (TEST) ═══");
-  console.log(`Kaynak: ${path.basename(SALES_FILE)}`);
-  const salesData = readExcel(SALES_FILE);
-  console.log(`Satır: ${salesData.length - 1}, Kolon: ${salesData[0].length}`);
-  await writeToSheet(sheets, spreadsheetId, testTab, salesData);
-
-  // --- STOK VERISI ---
-  console.log("\n═══ STOK VERİSİ (TEST) ═══");
-  console.log(`Kaynak: ${path.basename(STOCK_FILE)}`);
-  const stockData = readExcel(STOCK_FILE);
-  console.log(`Satır: ${stockData.length - 1}, Kolon: ${stockData[0].length}`);
-
-  // Filter to keep only relevant columns (reduce payload)
-  const stockHeaders = stockData[0];
-  const keepCols = [
-    "Ürün Kodu",
-    "Ürün Adı",
-    "Barkod",
-    "Kategori",
-    "Grup",
-    "Marka",
-    "Stok1",
-    "Stok2",
-    "buying_price",
-    "KDV",
-    "Para Birimi",
-    "Fiyat1",
-    "Trendyol Satış Fiyatı",
-    "HB Fiyat",
-    "N11 Fiyat",
-    "Kritik Stok",
-    "Durum",
-    "Menşei",
+  // Küçük test veri seti (örnek 3 satır)
+  const testRows = [
+    ["Ürün Kodu", "Ürün Adı", "Stok1"],
+    ["SKU-001", "Test Ürün 1", 10],
+    ["SKU-002", "Test Ürün 2", 5],
+    ["SKU-003", "Test Ürün 3", 0],
   ];
-  const keepIdx = keepCols
-    .map((name) => stockHeaders.indexOf(name))
-    .filter((i) => i >= 0);
-  const filteredStock = stockData.map((row) =>
-    keepIdx.map((i) => (row[i] != null ? row[i] : "")),
-  );
-  console.log(`Filtrelenmiş kolon: ${keepIdx.length} / ${stockHeaders.length}`);
-  await writeToSheet(sheets, spreadsheetId, testTab, filteredStock);
+  console.log("\n═══ KÜÇÜK PROD TEST VERİSİ ═══");
+  console.log(testRows);
+  await writeToSheet(sheets, spreadsheetId, prodTestTab, testRows);
 
-  console.log("\n═══ TAMAMLANDI (TEST) ═══\n");
+  console.log("\n═══ TAMAMLANDI (KONTROLLÜ PROD TEST) ═══\n");
 }
 
 main().catch((e) => fail(e.message));
