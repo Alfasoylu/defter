@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /**
  * Excel dosyalarini Google Sheets staging alanlarina yazar.
-* Service account ile Google Sheets API'ye veri yazar.
+ * clasp OAuth tokenlarini kullanarak Google Sheets API ile dogrudan yazar.
  * Kullanim: node scripts/upload-excel.js
  */
-
 
 const path = require("path");
 const fs = require("fs");
@@ -13,14 +12,19 @@ const { google } = require("googleapis");
 require("dotenv").config({ path: path.join(__dirname, "../.env") });
 
 const ROOT = path.resolve(__dirname, "..");
-const SALES_FILE = process.env.SALES_REPORT_PATH || path.join(ROOT, "docs", "entegra-sales-0101.2025-27.03.2026.xlsx");
-const STOCK_FILE = process.env.STOCK_FILE_PATH || path.join(ROOT, "docs", "stok-listesi-29.03.2026.xlsx");
+const SALES_FILE =
+  process.env.SALES_REPORT_PATH ||
+  path.join(ROOT, "docs", "entegra-sales-0101.2025-27.03.2026.xlsx");
+const STOCK_FILE =
+  process.env.STOCK_FILE_PATH ||
+  path.join(ROOT, "docs", "stok-listesi-29.03.2026.xlsx");
 const SERVICE_ACCOUNT_FILE = process.env.SERVICE_ACCOUNT_FILE;
 const SHEET_ID = process.env.SHEET_ID;
 const TEST_SHEET_ID = process.env.TEST_SHEET_ID;
 const DRY_RUN = process.env.DRY_RUN;
 const ALLOW_PROD_WRITE = process.env.ALLOW_PROD_WRITE === "true";
 
+// Güvenlik: DRY_RUN, TEST_SHEET_ID, SERVICE_ACCOUNT_FILE zorunlu
 function fail(msg) {
   console.error("[FATAL] " + msg);
   process.exit(1);
@@ -51,6 +55,38 @@ async function getAuth() {
   return await auth.getClient();
 }
 
+function fail(msg) {
+  console.error("[FATAL] " + msg);
+  process.exit(1);
+}
+
+function getTargetSheetId() {
+  if (!DRY_RUN) fail("DRY_RUN env zorunlu (true/false)");
+  if (DRY_RUN === "true") {
+    if (!TEST_SHEET_ID) fail("TEST_SHEET_ID env zorunlu (DRY_RUN=true)");
+    return TEST_SHEET_ID;
+  } else {
+    if (!SHEET_ID) fail("SHEET_ID env zorunlu (DRY_RUN=false)");
+    if (!ALLOW_PROD_WRITE)
+      fail("Prod sheet'e yazmak için ALLOW_PROD_WRITE=true olmalı");
+    return SHEET_ID;
+  }
+}
+
+async function getAuth() {
+  if (!SERVICE_ACCOUNT_FILE || !fs.existsSync(SERVICE_ACCOUNT_FILE)) {
+    fail(
+      "SERVICE_ACCOUNT_FILE bulunamadı veya erişilemiyor: " +
+        SERVICE_ACCOUNT_FILE,
+    );
+  }
+  const auth = new google.auth.GoogleAuth({
+    keyFile: SERVICE_ACCOUNT_FILE,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+  return await auth.getClient();
+}
+
 function readExcel(filePath) {
   const wb = XLSX.readFile(filePath);
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -64,7 +100,7 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
     fields: "sheets.properties",
   });
   const sheetMeta = meta.data.sheets.find(
-    s => s.properties.title === sheetName
+    (s) => s.properties.title === sheetName,
   );
   if (!sheetMeta) {
     fail(`  ✗ Sheet '${sheetName}' bulunamadi!`);
@@ -80,7 +116,13 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
   if (currentRows < neededRows) {
     requests.push({
       updateSheetProperties: {
-        properties: { sheetId, gridProperties: { rowCount: neededRows, columnCount: Math.max(currentCols, neededCols) } },
+        properties: {
+          sheetId,
+          gridProperties: {
+            rowCount: neededRows,
+            columnCount: Math.max(currentCols, neededCols),
+          },
+        },
         fields: "gridProperties.rowCount,gridProperties.columnCount",
       },
     });
@@ -94,7 +136,9 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
     });
   }
   if (requests.length > 0) {
-    console.log(`  Grid genisletiliyor: ${neededRows} satir x ${Math.max(currentCols, neededCols)} kolon`);
+    console.log(
+      `  Grid genisletiliyor: ${neededRows} satir x ${Math.max(currentCols, neededCols)} kolon`,
+    );
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: { requests },
@@ -117,15 +161,19 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
     const batch = rows.slice(i, i + BATCH);
     const startRow = i + 1;
     const range = `'${sheetName}'!A${startRow}`;
-    console.log(`  Yaziliyor: ${sheetName} [${i + 1}-${Math.min(i + BATCH, rows.length)} / ${rows.length}]`);
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: range,
-      valueInputOption: "RAW",
-      requestBody: { values: batch },
-    });
+    if (DRY_RUN === "true") {
+      console.log(`[DRY RUN] ${sheetName} [${i + 1}-${Math.min(i + BATCH, rows.length)} / ${rows.length}] (yazma simülasyonu)`);
+    } else {
+      console.log(`Yaziliyor: ${sheetName} [${i + 1}-${Math.min(i + BATCH, rows.length)} / ${rows.length}]`);
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: range,
+        valueInputOption: "RAW",
+        requestBody: { values: batch },
+      });
+    }
   }
-  console.log(`  ✓ ${sheetName}: ${rows.length - 1} veri satiri yazildi`);
+  console.log(`  ✓ ${sheetName}: ${rows.length - 1} veri satiri ${DRY_RUN === "true" ? "(DRY RUN)" : "yazildi"}`);
 }
 
 async function main() {
@@ -162,4 +210,7 @@ async function main() {
   console.log("\n═══ TAMAMLANDI ═══\n");
 }
 
-main().catch(e => { console.error("HATA:", e.message); process.exit(1); });
+main().catch((e) => {
+  console.error("HATA:", e.message);
+  process.exit(1);
+});

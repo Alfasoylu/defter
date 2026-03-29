@@ -2252,7 +2252,8 @@ function runBuildCashProjectionCLI(target) {
     return JSON.stringify({
       target: target || "live",
       durationMs: new Date().getTime() - start,
-      projectionDays: result && result.projection ? result.projection.length : 0,
+      projectionDays:
+        result && result.projection ? result.projection.length : 0,
       minCashReserve: result ? result.minCashReserve : null,
     });
   });
