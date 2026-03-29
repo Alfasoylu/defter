@@ -1,0 +1,1825 @@
+var CONFIG = {
+  sourceSheetName: "Hızlı Veri Girişi",
+  debtSheetName: "Borç Takibi",
+  receivableSheetName: "Alacak Takibi",
+  cashflowSheetName: "Nakit Akışı",
+  dashboardSheetName: "Dashboard",
+  actionCenterSheetName: "Aksiyon Merkezi",
+  sourceDataStartRow: 6,
+  sourceHeaderRow: 5,
+  sourceKeyColumn: 11,
+  sourceKeyHeader: "Kayıt ID",
+  targetDataStartRow: 6,
+  targetWriteColumnCount: 8,
+  sourceColumnCount: 10,
+  lockTimeoutMs: 30000,
+  spreadsheetTimeZone: "Europe/Istanbul",
+  dateNumberFormat: "dd.MM.yyyy",
+  keyPrefix: "HVG",
+  maintenanceToken: "maintenance-20260325-Dashboard-v1",
+  sourceTypeOptions: ["Nakit Giriş", "Nakit Çıkış"],
+  sourceCategoryOptions: [
+    "Satış",
+    "Kira",
+    "Tedarikçi",
+    "Kredi",
+    "Kredi Kartı",
+    "Çek",
+    "Maaş",
+    "Vergi",
+    "Diğer",
+  ],
+  sourceStatusOptions: ["Planlandı", "Gerçekleşti"],
+  priorityOptions: ["Düşük", "Orta", "Yüksek", "Kritik"],
+  debtTypeOptions: ["Kredi", "Kredi Kartı", "Çek", "Tedarikçi", "Diğer"],
+  debtStatusOptions: ["Planlandı", "Ödendi", "Gecikmiş", "Ertelendi"],
+  receivableCustomerTypeOptions: ["Mevcut", "Yeni", "Diğer"],
+  receivableStatusOptions: [
+    "Bekleniyor",
+    "Tahsil Edildi",
+    "Gecikmeli",
+    "İptal",
+  ],
+  safetyBuffer: 5000,
+  projectionDays: 30,
+  purchaseLookAheadDays: 14,
+  cashflowCapanisColumn: 11,
+};
+
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu("Muhasebe Bakım")
+    .addItem("Tam Bakım Çalıştır", "menuTamBakimCalistir")
+    .addSeparator()
+    .addItem("Giriş Şemasını Yükselt", "menuGirisSemasiniYukselt")
+    .addItem("Veri Doğrulamalarını Uygula", "menuVeriDogrulamalariniUygula")
+    .addItem(
+      "Dashboard ve Nakit Akışını Güçlendir",
+      "menuDashboardVeNakitAkisiniGuclendir",
+    )
+    .addItem("Uyarı Görünümlerini Kur", "menuUyariGorunumleriniKur")
+    .addItem("Hedefleri Yeniden Kur", "menuHedefleriYenidenKur")
+    .addItem("Tarih ve Saat Düzelt", "menuTarihBakimi")
+    .addItem("Kalıcı Anahtarları Kontrol Et", "menuAnahtarBakimi")
+    .addItem("Şablonu Sertleştir", "menuSablonSertlestir")
+    .addToUi();
+}
+
+function onEdit(e) {
+  if (!e || !e.range || !e.source) return;
+
+  var range = e.range;
+  var sheet = range.getSheet();
+  if (sheet.getName() !== CONFIG.sourceSheetName) return;
+
+  var startRow = Math.max(range.getRow(), CONFIG.sourceDataStartRow);
+  var endRow = range.getLastRow();
+  if (endRow < CONFIG.sourceDataStartRow) return;
+  if (range.getColumn() > CONFIG.sourceColumnCount) return;
+
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(CONFIG.lockTimeoutMs);
+
+  try {
+    girisSemasiniYukselt(sheet);
+    kaynakSayfasiniHazirla(sheet);
+    for (var row = startRow; row <= endRow; row++) {
+      islemeAlSatir(e.source, sheet, row);
+    }
+    guncelleKontrolPanelleri_(e.source);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function islemeAlSatir(ss, sheet, row) {
+  girisSemasiniYukselt(sheet);
+  kaynakSayfasiniHazirla(sheet);
+
+  var values = sheet
+    .getRange(row, 1, 1, CONFIG.sourceColumnCount)
+    .getValues()[0];
+
+  var tarih = tarihDegeriniNormalizeEt(values[0]);
+  var tip = values[1];
+  var kategori = values[2];
+  var tutar = values[3];
+  var durum = values[4];
+  var karsiTaraf = values[5];
+  var vadeTarihi = tarihDegeriniNormalizeEt(values[6]) || tarih;
+  var oncelik = values[7];
+  var sonrakiAksiyonTarihi = tarihDegeriniNormalizeEt(values[8]);
+  var aciklama = values[9];
+  var key = satirKaydiniAlVeyaUret(
+    sheet,
+    row,
+    tip || kategori || tutar || aciklama,
+  );
+
+  if (!tip || !tutar) {
+    silKayit(ss, CONFIG.debtSheetName, key);
+    silKayit(ss, CONFIG.receivableSheetName, key);
+    return;
+  }
+
+  if (tip === "Nakit Çıkış") {
+    silKayit(ss, CONFIG.receivableSheetName, key);
+    yazVeyaGuncelle(
+      ss,
+      CONFIG.debtSheetName,
+      key,
+      buildDebtRowData(
+        key,
+        kategori,
+        karsiTaraf,
+        tutar,
+        vadeTarihi,
+        durum,
+        oncelik,
+        sonrakiAksiyonTarihi,
+        aciklama,
+      ),
+    );
+    return;
+  }
+
+  if (tip === "Nakit Giriş") {
+    silKayit(ss, CONFIG.debtSheetName, key);
+    yazVeyaGuncelle(
+      ss,
+      CONFIG.receivableSheetName,
+      key,
+      buildReceivableRowData(
+        key,
+        karsiTaraf,
+        kategori,
+        tarih,
+        vadeTarihi,
+        tutar,
+        durum,
+        oncelik,
+        sonrakiAksiyonTarihi,
+        aciklama,
+      ),
+    );
+    return;
+  }
+
+  silKayit(ss, CONFIG.debtSheetName, key);
+  silKayit(ss, CONFIG.receivableSheetName, key);
+}
+
+function yazVeyaGuncelle(ss, sheetName, key, rowData) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) {
+    throw new Error("Sayfa bulunamadı: " + sheetName);
+  }
+
+  ensureTargetSheetLayout(sh, sheetName);
+
+  var targetRow = bulKayitSatiri(sh, key);
+  if (!targetRow) {
+    targetRow = ilkBosHedefSatiri(sh);
+  }
+
+  writeMappedRow(sh, targetRow, rowData);
+}
+
+function silKayit(ss, sheetName, key) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) {
+    throw new Error("Sayfa bulunamadı: " + sheetName);
+  }
+
+  var targetRow = bulKayitSatiri(sh, key);
+  if (targetRow) {
+    clearMappedRow(sh, targetRow, hedefSablonTaniminiAl(sheetName).dataColumns);
+  }
+}
+
+function writeMappedRow(sh, row, rowData) {
+  var columns = Object.keys(rowData);
+
+  for (var i = 0; i < columns.length; i++) {
+    var column = Number(columns[i]);
+    sh.getRange(row, column).setValue(rowData[column]);
+  }
+}
+
+function clearMappedRow(sh, row, columns) {
+  for (var i = 0; i < columns.length; i++) {
+    sh.getRange(row, columns[i]).clearContent();
+  }
+}
+
+function buildDebtRowData(
+  key,
+  kategori,
+  karsiTaraf,
+  tutar,
+  vadeTarihi,
+  durum,
+  oncelik,
+  sonrakiAksiyonTarihi,
+  aciklama,
+) {
+  return {
+    1: key,
+    2: borcTuruDegeri(kategori),
+    3: karsiTaraf || "-",
+    4: tutar,
+    5: vadeTarihi || "",
+    6: tutar,
+    7: durum === "Gerçekleşti" ? "Ödendi" : "Planlandı",
+    8: oncelikDegeri(oncelik),
+    11: sonrakiAksiyonTarihi || "",
+    12: aciklama || kategori || "-",
+  };
+}
+
+function buildReceivableRowData(
+  key,
+  karsiTaraf,
+  kategori,
+  tarih,
+  vadeTarihi,
+  tutar,
+  durum,
+  oncelik,
+  sonrakiAksiyonTarihi,
+  aciklama,
+) {
+  return {
+    1: key,
+    2: karsiTaraf || aciklama || "-",
+    3: alacakMusteriTipiDegeri(kategori),
+    4: tarih || "",
+    5: vadeTarihi || tarih || "",
+    6: tutar,
+    7: durum === "Gerçekleşti" ? "Tahsil Edildi" : "Bekleniyor",
+    8: alacakOlasilikDegeri(durum, oncelik),
+    12: oncelikDegeri(oncelik),
+    13: sonrakiAksiyonTarihi || "",
+  };
+}
+
+function bulKayitSatiri(sh, key) {
+  var lastRow = sh.getLastRow();
+  if (lastRow < CONFIG.targetDataStartRow) return 0;
+
+  var rowCount = lastRow - CONFIG.targetDataStartRow + 1;
+  var keys = sh.getRange(CONFIG.targetDataStartRow, 1, rowCount, 1).getValues();
+
+  for (var i = 0; i < keys.length; i++) {
+    if (keys[i][0] === key) {
+      return CONFIG.targetDataStartRow + i;
+    }
+  }
+
+  return 0;
+}
+
+function ilkBosHedefSatiri(sh) {
+  var lastRow = Math.max(sh.getLastRow(), CONFIG.targetDataStartRow);
+  var rowCount = lastRow - CONFIG.targetDataStartRow + 1;
+  var keys = sh.getRange(CONFIG.targetDataStartRow, 1, rowCount, 1).getValues();
+
+  for (var i = 0; i < keys.length; i++) {
+    if (!keys[i][0]) {
+      return CONFIG.targetDataStartRow + i;
+    }
+  }
+
+  return lastRow + 1;
+}
+
+function borcTuruDegeri(kategori) {
+  var allowedValues = ["Kredi", "Kredi Kartı", "Çek", "Tedarikçi", "Diğer"];
+
+  if (allowedValues.indexOf(kategori) !== -1) {
+    return kategori;
+  }
+
+  return "Diğer";
+}
+
+function oncelikDegeri(value) {
+  var allowedValues = ["Düşük", "Orta", "Yüksek", "Kritik"];
+
+  if (allowedValues.indexOf(value) !== -1) {
+    return value;
+  }
+
+  return "Orta";
+}
+
+function alacakMusteriTipiDegeri(kategori) {
+  if (kategori === "Satış") {
+    return "Mevcut";
+  }
+
+  return kategori || "Diğer";
+}
+
+function alacakOlasilikDegeri(durum, oncelik) {
+  if (durum === "Gerçekleşti") {
+    return 1;
+  }
+
+  if (oncelik === "Kritik" || oncelik === "Yüksek") {
+    return 0.9;
+  }
+
+  if (oncelik === "Düşük") {
+    return 0.6;
+  }
+
+  return 0.8;
+}
+
+function tarihDegeriniNormalizeEt(value) {
+  if (Object.prototype.toString.call(value) === "[object Date]") {
+    if (isNaN(value.getTime())) {
+      return value;
+    }
+
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  var trimmed = value.trim();
+  if (!trimmed) {
+    return value;
+  }
+
+  var match = trimmed.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})$/);
+  if (!match) {
+    return value;
+  }
+
+  var day = Number(match[1]);
+  var month = Number(match[2]);
+  var year = Number(match[3]);
+  var parsedDate = new Date(year, month - 1, day);
+
+  if (
+    parsedDate.getFullYear() !== year ||
+    parsedDate.getMonth() !== month - 1 ||
+    parsedDate.getDate() !== day
+  ) {
+    return value;
+  }
+
+  return parsedDate;
+}
+
+function kaynakSayfasiniHazirla(sheet) {
+  if (!sheet || sheet.getName() !== CONFIG.sourceSheetName) {
+    return;
+  }
+
+  girisSemasiniYukselt(sheet);
+
+  if (
+    sheet
+      .getRange(CONFIG.sourceHeaderRow, CONFIG.sourceKeyColumn)
+      .getValue() !== CONFIG.sourceKeyHeader
+  ) {
+    sheet
+      .getRange(CONFIG.sourceHeaderRow, CONFIG.sourceKeyColumn)
+      .setValue(CONFIG.sourceKeyHeader);
+  }
+
+  sheet.hideColumns(CONFIG.sourceKeyColumn);
+}
+
+function girisSemasiniYukselt(sheet) {
+  if (!sheet || sheet.getName() !== CONFIG.sourceSheetName) {
+    return { ok: false, reason: "wrong-sheet" };
+  }
+
+  var legacyKeyHeader = String(
+    sheet.getRange(CONFIG.sourceHeaderRow, 7).getValue() || "",
+  ).trim();
+  var targetKeyHeader = String(
+    sheet.getRange(CONFIG.sourceHeaderRow, CONFIG.sourceKeyColumn).getValue() ||
+      "",
+  ).trim();
+
+  if (
+    legacyKeyHeader === CONFIG.sourceKeyHeader &&
+    targetKeyHeader !== CONFIG.sourceKeyHeader
+  ) {
+    sheet.insertColumnsAfter(6, 4);
+  }
+
+  if (sheet.getMaxColumns() < CONFIG.sourceKeyColumn) {
+    sheet.insertColumnsAfter(
+      sheet.getMaxColumns(),
+      CONFIG.sourceKeyColumn - sheet.getMaxColumns(),
+    );
+  }
+
+  sheet
+    .getRange(CONFIG.sourceHeaderRow, 1, 1, CONFIG.sourceColumnCount)
+    .setValues([sourceHeaderValues()]);
+  sheet
+    .getRange(CONFIG.sourceHeaderRow, CONFIG.sourceKeyColumn)
+    .setValue(CONFIG.sourceKeyHeader);
+
+  applyDateFormat(sheet, CONFIG.sourceDataStartRow, 1);
+  applyDateFormat(sheet, CONFIG.sourceDataStartRow, 7);
+  applyDateFormat(sheet, CONFIG.sourceDataStartRow, 9);
+  sheet.hideColumns(CONFIG.sourceKeyColumn);
+
+  return {
+    ok: true,
+    maxColumns: sheet.getMaxColumns(),
+    keyColumn: CONFIG.sourceKeyColumn,
+  };
+}
+
+function sourceHeaderValues() {
+  return [
+    "Tarih",
+    "Kayıt Türü",
+    "Kategori",
+    "Tutar",
+    "Durum",
+    "Karşı Taraf",
+    "Vade Tarihi",
+    "Öncelik",
+    "Sonraki Aksiyon Tarihi",
+    "Açıklama",
+  ];
+}
+
+function satirKaydiniAlVeyaUret(sheet, row, shouldExist) {
+  var keyCell = sheet.getRange(row, CONFIG.sourceKeyColumn);
+  var currentKey = String(keyCell.getValue() || "").trim();
+
+  if (currentKey) {
+    return currentKey;
+  }
+
+  if (!shouldExist) {
+    return "";
+  }
+
+  var newKey = yeniKayitAnahtariUret();
+  keyCell.setValue(newKey);
+  return newKey;
+}
+
+function yeniKayitAnahtariUret() {
+  return CONFIG.keyPrefix + "-" + Utilities.getUuid();
+}
+
+function ensureTargetSheetLayout(sh, sheetName) {
+  var definition = hedefSablonTaniminiAl(sheetName);
+  if (sh.getMaxColumns() < definition.totalColumnCount) {
+    sh.insertColumnsAfter(
+      sh.getMaxColumns(),
+      definition.totalColumnCount - sh.getMaxColumns(),
+    );
+  }
+}
+
+function uygulaVeriDogrulamalari() {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(CONFIG.lockTimeoutMs);
+
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sourceSheet = ss.getSheetByName(CONFIG.sourceSheetName);
+    var debtSheet = ss.getSheetByName(CONFIG.debtSheetName);
+    var receivableSheet = ss.getSheetByName(CONFIG.receivableSheetName);
+
+    girisSemasiniYukselt(sourceSheet);
+    kaynakSayfasiniHazirla(sourceSheet);
+    ensureTargetSheetLayout(debtSheet, CONFIG.debtSheetName);
+    ensureTargetSheetLayout(receivableSheet, CONFIG.receivableSheetName);
+
+    applyListValidation_(
+      sourceSheet,
+      CONFIG.sourceDataStartRow,
+      2,
+      CONFIG.sourceTypeOptions,
+    );
+    applyListValidation_(
+      sourceSheet,
+      CONFIG.sourceDataStartRow,
+      3,
+      CONFIG.sourceCategoryOptions,
+    );
+    applyListValidation_(
+      sourceSheet,
+      CONFIG.sourceDataStartRow,
+      5,
+      CONFIG.sourceStatusOptions,
+    );
+    applyDateValidation_(sourceSheet, CONFIG.sourceDataStartRow, 1);
+    applyDateValidation_(sourceSheet, CONFIG.sourceDataStartRow, 7);
+    applyDateValidation_(sourceSheet, CONFIG.sourceDataStartRow, 9);
+    applyListValidation_(
+      sourceSheet,
+      CONFIG.sourceDataStartRow,
+      8,
+      CONFIG.priorityOptions,
+    );
+
+    applyListValidation_(
+      debtSheet,
+      CONFIG.targetDataStartRow,
+      2,
+      CONFIG.debtTypeOptions,
+    );
+    applyDateValidation_(debtSheet, CONFIG.targetDataStartRow, 5);
+    applyListValidation_(
+      debtSheet,
+      CONFIG.targetDataStartRow,
+      7,
+      CONFIG.debtStatusOptions,
+    );
+    applyListValidation_(
+      debtSheet,
+      CONFIG.targetDataStartRow,
+      8,
+      CONFIG.priorityOptions,
+    );
+    applyDateValidation_(debtSheet, CONFIG.targetDataStartRow, 11);
+
+    applyListValidation_(
+      receivableSheet,
+      CONFIG.targetDataStartRow,
+      3,
+      CONFIG.receivableCustomerTypeOptions,
+    );
+    applyDateValidation_(receivableSheet, CONFIG.targetDataStartRow, 4);
+    applyDateValidation_(receivableSheet, CONFIG.targetDataStartRow, 5);
+    applyListValidation_(
+      receivableSheet,
+      CONFIG.targetDataStartRow,
+      7,
+      CONFIG.receivableStatusOptions,
+    );
+    applyListValidation_(
+      receivableSheet,
+      CONFIG.targetDataStartRow,
+      12,
+      CONFIG.priorityOptions,
+    );
+    applyDateValidation_(receivableSheet, CONFIG.targetDataStartRow, 13);
+
+    return {
+      ok: true,
+      sourceSheet: sourceSheet.getName(),
+      debtSheet: debtSheet.getName(),
+      receivableSheet: receivableSheet.getName(),
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function applyListValidation_(sheet, startRow, column, options) {
+  if (!sheet) {
+    return;
+  }
+
+  var maxRows = sheet.getMaxRows();
+  if (maxRows < startRow) {
+    return;
+  }
+
+  var rule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(options, true)
+    .setAllowInvalid(false)
+    .build();
+
+  sheet
+    .getRange(startRow, column, maxRows - startRow + 1, 1)
+    .setDataValidation(rule);
+}
+
+function applyDateValidation_(sheet, startRow, column) {
+  if (!sheet) {
+    return;
+  }
+
+  var maxRows = sheet.getMaxRows();
+  if (maxRows < startRow) {
+    return;
+  }
+
+  var rule = SpreadsheetApp.newDataValidation()
+    .requireDate()
+    .setAllowInvalid(false)
+    .build();
+
+  sheet
+    .getRange(startRow, column, maxRows - startRow + 1, 1)
+    .setDataValidation(rule);
+}
+
+function hedefleriYenidenKur() {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(CONFIG.lockTimeoutMs);
+
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sourceSheet = ss.getSheetByName(CONFIG.sourceSheetName);
+    if (!sourceSheet) {
+      throw new Error("Sayfa bulunamadı: " + CONFIG.sourceSheetName);
+    }
+
+    hedefSablonunuOnar(ss, CONFIG.debtSheetName);
+    hedefSablonunuOnar(ss, CONFIG.receivableSheetName);
+    hedefiTemizle(ss, CONFIG.debtSheetName);
+    hedefiTemizle(ss, CONFIG.receivableSheetName);
+
+    var lastSourceRow = sourceSheet.getLastRow();
+    var processedRows = 0;
+
+    for (var row = CONFIG.sourceDataStartRow; row <= lastSourceRow; row++) {
+      islemeAlSatir(ss, sourceSheet, row);
+      processedRows++;
+    }
+
+    sertlestirHedefSablonlari();
+
+    return {
+      ok: true,
+      processedRows: processedRows,
+      sourceLastRow: lastSourceRow,
+      debtLastRow: ss.getSheetByName(CONFIG.debtSheetName).getLastRow(),
+      receivableLastRow: ss
+        .getSheetByName(CONFIG.receivableSheetName)
+        .getLastRow(),
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function hedefiTemizle(ss, sheetName) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) {
+    throw new Error("Sayfa bulunamadı: " + sheetName);
+  }
+
+  ensureTargetSheetLayout(sh, sheetName);
+
+  var lastRow = sh.getLastRow();
+  if (lastRow < CONFIG.targetDataStartRow) {
+    return;
+  }
+
+  var columns = hedefSablonTaniminiAl(sheetName).dataColumns;
+  for (var i = 0; i < columns.length; i++) {
+    sh.getRange(
+      CONFIG.targetDataStartRow,
+      columns[i],
+      lastRow - CONFIG.targetDataStartRow + 1,
+      1,
+    ).clearContent();
+  }
+}
+
+function hedefSablonunuOnar(ss, sheetName) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) {
+    throw new Error("Sayfa bulunamadı: " + sheetName);
+  }
+
+  ensureTargetSheetLayout(sh, sheetName);
+
+  if (sheetName === CONFIG.debtSheetName) {
+    sh.getRange(2, 1, 4, 12).clearContent();
+    sh.getRange(2, 1).setValue(
+      "Her satır tek bir ödeme veya borç kalemidir. Karşı taraf, öncelik ve sonraki aksiyon bilgileriyle hangi ödemenin ne zaman ele alınacağını tek ekrandan izleyin.",
+    );
+    sh.getRange(5, 1, 1, 12).setValues([
+      [
+        "Borç Kodu",
+        "Tür",
+        "Kurum",
+        "Toplam Borç",
+        "Vade Tarihi",
+        "Ödeme Tutarı",
+        "Durum",
+        "Öncelik",
+        "Gün Kaldı",
+        "Uyarı",
+        "Sonraki Aksiyon",
+        "Not",
+      ],
+    ]);
+    return;
+  }
+
+  if (sheetName === CONFIG.receivableSheetName) {
+    sh.getRange(2, 1, 4, 13).clearContent();
+    sh.getRange(2, 1).setValue(
+      "Her satır tek bir tahsilat takibidir. Müşteri, vade, öncelik ve sonraki aksiyon bilgileri ile riskli alacakları öne çıkarın.",
+    );
+    sh.getRange(5, 1, 1, 13).setValues([
+      [
+        "Alacak Kodu",
+        "Müşteri",
+        "Müşteri Tipi",
+        "Fatura Tarihi",
+        "Vade Tarihi",
+        "Beklenen Tutar",
+        "Durum",
+        "Olasılık",
+        "Gecikme Gün",
+        "Risk Puanı",
+        "Uyarı",
+        "Öncelik",
+        "Sonraki Aksiyon",
+      ],
+    ]);
+  }
+}
+
+function sertlestirHedefSablonlari() {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(CONFIG.lockTimeoutMs);
+
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var debtSummary = tekHedefSablonunuSertlestir(ss, CONFIG.debtSheetName);
+    var receivableSummary = tekHedefSablonunuSertlestir(
+      ss,
+      CONFIG.receivableSheetName,
+    );
+
+    return {
+      ok: true,
+      debt: debtSummary,
+      receivable: receivableSummary,
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function tekHedefSablonunuSertlestir(ss, sheetName) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) {
+    throw new Error("Sayfa bulunamadı: " + sheetName);
+  }
+
+  var definition = hedefSablonTaniminiAl(sheetName);
+  var maxRows = sh.getMaxRows();
+  var activeLastRow = bulSonDoluKayitSatiri(sh);
+  var activeRowCount =
+    activeLastRow >= CONFIG.targetDataStartRow
+      ? activeLastRow - CONFIG.targetDataStartRow + 1
+      : 0;
+
+  var templateRange = sh.getRange(
+    CONFIG.targetDataStartRow,
+    1,
+    1,
+    definition.totalColumnCount,
+  );
+
+  if (activeRowCount > 0) {
+    templateRange.copyTo(
+      sh.getRange(
+        CONFIG.targetDataStartRow,
+        1,
+        activeRowCount,
+        definition.totalColumnCount,
+      ),
+      SpreadsheetApp.CopyPasteType.PASTE_FORMAT,
+      false,
+    );
+
+    templateRange.copyTo(
+      sh.getRange(
+        CONFIG.targetDataStartRow,
+        1,
+        activeRowCount,
+        definition.totalColumnCount,
+      ),
+      SpreadsheetApp.CopyPasteType.PASTE_DATA_VALIDATION,
+      false,
+    );
+
+    sh.getRange(
+      CONFIG.targetDataStartRow,
+      definition.formulaStartColumn,
+      1,
+      definition.formulaColumnCount,
+    ).copyTo(
+      sh.getRange(
+        CONFIG.targetDataStartRow,
+        definition.formulaStartColumn,
+        activeRowCount,
+        definition.formulaColumnCount,
+      ),
+      SpreadsheetApp.CopyPasteType.PASTE_FORMULA,
+      false,
+    );
+  }
+
+  var firstEmptyRow = Math.max(
+    CONFIG.targetDataStartRow + activeRowCount,
+    CONFIG.targetDataStartRow,
+  );
+  if (maxRows >= firstEmptyRow) {
+    sh.getRange(
+      firstEmptyRow,
+      definition.formulaStartColumn,
+      maxRows - firstEmptyRow + 1,
+      definition.formulaColumnCount,
+    ).clearContent();
+  }
+
+  return {
+    sheetName: sheetName,
+    activeRowCount: activeRowCount,
+    activeLastRow: activeLastRow,
+    clearedFromRow: firstEmptyRow,
+  };
+}
+
+function hedefSablonTaniminiAl(sheetName) {
+  if (sheetName === CONFIG.debtSheetName) {
+    return {
+      totalColumnCount: 12,
+      formulaStartColumn: 9,
+      formulaColumnCount: 2,
+      dataColumns: [1, 2, 3, 4, 5, 6, 7, 8, 11, 12],
+    };
+  }
+
+  if (sheetName === CONFIG.receivableSheetName) {
+    return {
+      totalColumnCount: 13,
+      formulaStartColumn: 9,
+      formulaColumnCount: 3,
+      dataColumns: [1, 2, 3, 4, 5, 6, 7, 8, 12, 13],
+    };
+  }
+
+  throw new Error("Şablon tanımı bulunamadı: " + sheetName);
+}
+
+function bulSonDoluKayitSatiri(sh) {
+  var lastRow = sh.getLastRow();
+  if (lastRow < CONFIG.targetDataStartRow) {
+    return 0;
+  }
+
+  var rowCount = lastRow - CONFIG.targetDataStartRow + 1;
+  var keys = sh.getRange(CONFIG.targetDataStartRow, 1, rowCount, 1).getValues();
+
+  for (var i = keys.length - 1; i >= 0; i--) {
+    if (keys[i][0]) {
+      return CONFIG.targetDataStartRow + i;
+    }
+  }
+
+  return 0;
+}
+
+function kaliciAnahtarlaraGecisYap() {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(CONFIG.lockTimeoutMs);
+
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sourceSheet = ss.getSheetByName(CONFIG.sourceSheetName);
+    if (!sourceSheet) {
+      throw new Error("Sayfa bulunamadı: " + CONFIG.sourceSheetName);
+    }
+
+    girisSemasiniYukselt(sourceSheet);
+    kaynakSayfasiniHazirla(sourceSheet);
+
+    var lastRow = sourceSheet.getLastRow();
+    var assignedKeys = 0;
+
+    for (var row = CONFIG.sourceDataStartRow; row <= lastRow; row++) {
+      var values = sourceSheet
+        .getRange(row, 1, 1, CONFIG.sourceColumnCount)
+        .getDisplayValues()[0];
+      var hasContent = values.join("").trim() !== "";
+      var existingKey = String(
+        sourceSheet.getRange(row, CONFIG.sourceKeyColumn).getValue() || "",
+      ).trim();
+
+      if (!hasContent) {
+        if (existingKey) {
+          sourceSheet.getRange(row, CONFIG.sourceKeyColumn).clearContent();
+        }
+        continue;
+      }
+
+      if (!existingKey) {
+        sourceSheet
+          .getRange(row, CONFIG.sourceKeyColumn)
+          .setValue(yeniKayitAnahtariUret());
+        assignedKeys++;
+      }
+    }
+
+    var rebuild = hedefleriYenidenKur();
+
+    return {
+      ok: true,
+      assignedKeys: assignedKeys,
+      sourceLastRow: lastRow,
+      rebuild: rebuild,
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function zamanDilimiVeTarihFormatlariniDuzelt() {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(CONFIG.lockTimeoutMs);
+
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    ss.setSpreadsheetTimeZone(CONFIG.spreadsheetTimeZone);
+
+    var sourceSheet = ss.getSheetByName(CONFIG.sourceSheetName);
+    var debtSheet = ss.getSheetByName(CONFIG.debtSheetName);
+    var receivableSheet = ss.getSheetByName(CONFIG.receivableSheetName);
+    var cashflowSheet = ss.getSheetByName(CONFIG.cashflowSheetName);
+
+    girisSemasiniYukselt(sourceSheet);
+
+    var normalizedSourceDates = normalizeDateColumn(
+      sourceSheet,
+      CONFIG.sourceDataStartRow,
+      1,
+    );
+
+    applyDateFormat(sourceSheet, CONFIG.sourceDataStartRow, 1);
+    applyDateFormat(sourceSheet, CONFIG.sourceDataStartRow, 7);
+    applyDateFormat(sourceSheet, CONFIG.sourceDataStartRow, 9);
+    applyDateFormat(debtSheet, CONFIG.targetDataStartRow, 5);
+    applyDateFormat(receivableSheet, CONFIG.targetDataStartRow, 4);
+    applyDateFormat(receivableSheet, CONFIG.targetDataStartRow, 5);
+    applyDateFormat(cashflowSheet, 8, 1);
+
+    var rebuildResult = hedefleriYenidenKur();
+
+    applyDateFormat(debtSheet, CONFIG.targetDataStartRow, 5);
+    applyDateFormat(receivableSheet, CONFIG.targetDataStartRow, 4);
+    applyDateFormat(receivableSheet, CONFIG.targetDataStartRow, 5);
+
+    return {
+      ok: true,
+      timezone: ss.getSpreadsheetTimeZone(),
+      normalizedSourceDates: normalizedSourceDates,
+      rebuild: rebuildResult,
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function normalizeDateColumn(sheet, startRow, column) {
+  if (!sheet) {
+    return 0;
+  }
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < startRow) {
+    return 0;
+  }
+
+  var rowCount = lastRow - startRow + 1;
+  var range = sheet.getRange(startRow, column, rowCount, 1);
+  var values = range.getValues();
+  var updates = 0;
+
+  for (var i = 0; i < values.length; i++) {
+    var normalized = tarihDegeriniNormalizeEt(values[i][0]);
+    var current = values[i][0];
+    var currentIsDate =
+      Object.prototype.toString.call(current) === "[object Date]";
+    var normalizedIsDate =
+      Object.prototype.toString.call(normalized) === "[object Date]" &&
+      !isNaN(normalized.getTime());
+
+    if (!normalizedIsDate) {
+      continue;
+    }
+
+    if (
+      !currentIsDate ||
+      current.getFullYear() !== normalized.getFullYear() ||
+      current.getMonth() !== normalized.getMonth() ||
+      current.getDate() !== normalized.getDate()
+    ) {
+      values[i][0] = normalized;
+      updates++;
+    }
+  }
+
+  if (updates > 0) {
+    range.setValues(values);
+  }
+
+  return updates;
+}
+
+function applyDateFormat(sheet, startRow, column) {
+  if (!sheet) {
+    return;
+  }
+
+  var maxRows = sheet.getMaxRows();
+  if (maxRows < startRow) {
+    return;
+  }
+
+  sheet
+    .getRange(startRow, column, maxRows - startRow + 1, 1)
+    .setNumberFormat(CONFIG.dateNumberFormat);
+}
+
+function guclendirDashboardVeNakitAkisi() {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(CONFIG.lockTimeoutMs);
+
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var dashboardSheet = getOrCreateSheet_(ss, CONFIG.dashboardSheetName);
+    var cashflowSheet = ss.getSheetByName(CONFIG.cashflowSheetName);
+    var actionCenterSheet = getOrCreateSheet_(ss, CONFIG.actionCenterSheetName);
+
+    if (!cashflowSheet) {
+      throw new Error("Sayfa bulunamadı: " + CONFIG.cashflowSheetName);
+    }
+
+    guncelleKontrolPanelleri_(
+      ss,
+      dashboardSheet,
+      cashflowSheet,
+      actionCenterSheet,
+    );
+
+    return {
+      ok: true,
+      dashboardSheet: dashboardSheet.getName(),
+      cashflowSheet: cashflowSheet.getName(),
+      actionCenterSheet: actionCenterSheet.getName(),
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function kurUyariGorunumleri() {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(CONFIG.lockTimeoutMs);
+
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var actionCenterSheet = getOrCreateSheet_(ss, CONFIG.actionCenterSheetName);
+    var data = buildOperationalData_(ss);
+    kurAksiyonMerkezi_(actionCenterSheet, data);
+
+    return {
+      ok: true,
+      actionCenterSheet: actionCenterSheet.getName(),
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getOrCreateSheet_(ss, sheetName) {
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+  }
+
+  return sheet;
+}
+
+function guncelleKontrolPanelleri_(
+  ss,
+  dashboardSheet,
+  cashflowSheet,
+  actionCenterSheet,
+) {
+  var dashboard =
+    dashboardSheet || getOrCreateSheet_(ss, CONFIG.dashboardSheetName);
+  var cashflow = cashflowSheet || ss.getSheetByName(CONFIG.cashflowSheetName);
+  var actionCenter =
+    actionCenterSheet || getOrCreateSheet_(ss, CONFIG.actionCenterSheetName);
+  var data = buildOperationalData_(ss);
+
+  guclendirNakitAkisi_(cashflow, data);
+  kurDashboardGorunumu_(dashboard, data);
+  kurAksiyonMerkezi_(actionCenter, data);
+}
+
+function buildOperationalData_(ss) {
+  var debtRecords = readDebtRecords_(ss.getSheetByName(CONFIG.debtSheetName));
+  var receivableRecords = readReceivableRecords_(
+    ss.getSheetByName(CONFIG.receivableSheetName),
+  );
+  var today = startOfDay_(new Date());
+  var currentCash = readCurrentCashFromCashflow_(ss);
+  var projection = buildForwardProjection_(
+    currentCash,
+    debtRecords,
+    receivableRecords,
+  );
+  var bestWindows = findBestPurchasingDays_(projection);
+  var plus7 = addDays_(today, 7);
+  var plus14 = addDays_(today, 14);
+  var plus30 = addDays_(today, CONFIG.projectionDays);
+  var weeklySummary = buildWeeklySummary_(projection);
+
+  return {
+    today: today,
+    debts: debtRecords,
+    receivables: receivableRecords,
+    currentCash: currentCash,
+    projection: projection,
+    bestWindows: bestWindows,
+    weeklySummary: weeklySummary,
+    metrics: {
+      currentCash: currentCash,
+      next7Receivable: sumRecordsBetween_(receivableRecords, today, plus7),
+      next7Debt: sumRecordsBetween_(debtRecords, today, plus7),
+      balance7: projectionBalanceAt_(projection, 7),
+      balance14: projectionBalanceAt_(projection, 14),
+      balance30: projectionBalanceAt_(projection, CONFIG.projectionDays),
+      todayCapacity: projection.length > 0 ? projection[0].purchaseCapacity : 0,
+      bestDay: bestWindows.length > 0 ? bestWindows[0].date : null,
+      bestCapacity:
+        bestWindows.length > 0 ? bestWindows[0].purchaseCapacity : 0,
+    },
+  };
+}
+
+function guclendirNakitAkisi_(sheet, data) {
+  if (!sheet) {
+    return;
+  }
+
+  if (sheet.getMaxColumns() < 17) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), 17 - sheet.getMaxColumns());
+  }
+
+  sheet
+    .getRange(7, 13, 1, 5)
+    .setValues([
+      [
+        "Beklenen Tahsilat",
+        "Planlı Ödeme",
+        "Tahmini Bakiye",
+        "Alım Kapasitesi",
+        "Alım Sinyali",
+      ],
+    ]);
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 8) {
+    return;
+  }
+
+  var projMap = {};
+  data.projection.forEach(function (p) {
+    projMap[p.dateKey] = p;
+  });
+
+  var dateDisplays = sheet.getRange(8, 1, lastRow - 7, 1).getDisplayValues();
+  var output = [];
+
+  for (var i = 0; i < dateDisplays.length; i++) {
+    var dateValue = parseTurkishDate_(dateDisplays[i][0]);
+    if (!dateValue) {
+      output.push(["", "", "", "", ""]);
+      continue;
+    }
+    var p = projMap[dateKey_(dateValue)];
+    if (!p) {
+      output.push([0, 0, "", "", ""]);
+      continue;
+    }
+    output.push([p.inflow, p.outflow, p.balance, p.purchaseCapacity, p.signal]);
+  }
+
+  sheet.getRange(8, 13, output.length, 5).setValues(output);
+  sheet.getRange(8, 13, output.length, 4).setNumberFormat("#,##0.00");
+}
+
+function kurDashboardGorunumu_(sheet, data) {
+  if (!sheet) {
+    return;
+  }
+
+  if (sheet.getMaxColumns() < 13) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), 13 - sheet.getMaxColumns());
+  }
+
+  sheet.getRange("A1:M30").clearContent();
+  sheet.getRange("A1").setValue("Mal Alım Planlama Paneli");
+  sheet.getRange("A2:B10").setValues([
+    ["Mevcut Nakit Pozisyonu", data.metrics.currentCash],
+    ["7 Gün Beklenen Tahsilat", data.metrics.next7Receivable],
+    ["7 Gün Planlı Ödemeler", data.metrics.next7Debt],
+    ["7 Gün Sonu Tahmini Bakiye", data.metrics.balance7],
+    ["14 Gün Sonu Tahmini Bakiye", data.metrics.balance14],
+    ["30 Gün Sonu Tahmini Bakiye", data.metrics.balance30],
+    ["Bugün Alım Kapasitesi", data.metrics.todayCapacity],
+    [
+      "En İyi Alım Günü",
+      data.metrics.bestDay ? formatDateCell_(data.metrics.bestDay) : "-",
+    ],
+    ["En Yüksek Alım Bütçesi", data.metrics.bestCapacity],
+  ]);
+  sheet.getRange("B2:B7").setNumberFormat("#,##0.00");
+  sheet.getRange("B8").setNumberFormat("#,##0.00");
+  sheet.getRange("B9").setNumberFormat("@");
+  sheet.getRange("B10").setNumberFormat("#,##0.00");
+
+  sheet
+    .getRange("D1:I1")
+    .setValues([["En İyi 10 Alım Penceresi", "", "", "", "", ""]]);
+  writeTable_(
+    sheet,
+    2,
+    4,
+    [
+      "Tarih",
+      "Beklenen Giriş",
+      "Planlı Çıkış",
+      "Bakiye",
+      "Alım Kapasitesi",
+      "Sinyal",
+    ],
+    buildBestWindowsTableRows_(data, 10),
+  );
+  sheet.getRange(3, 5, 10, 4).setNumberFormat("#,##0.00");
+
+  sheet
+    .getRange("A14:F14")
+    .setValues([["Yaklaşan Tahsilatlar (Pazaryeri)", "", "", "", "", ""]]);
+  writeTable_(
+    sheet,
+    15,
+    1,
+    ["Kod", "Kaynak", "Vade", "Tutar", "Durum", "Gün Kaldı"],
+    buildUpcomingReceivablesRows_(data, 10),
+  );
+  sheet.getRange(16, 4, 10, 1).setNumberFormat("#,##0.00");
+
+  sheet
+    .getRange("H14:M14")
+    .setValues([["Yaklaşan Ödemeler", "", "", "", "", ""]]);
+  writeTable_(
+    sheet,
+    15,
+    8,
+    ["Kod", "Kurum", "Vade", "Tutar", "Öncelik", "Gün Kaldı"],
+    buildUpcomingDebtRows_(data, 10),
+  );
+  sheet.getRange(16, 11, 10, 1).setNumberFormat("#,##0.00");
+}
+
+function kurAksiyonMerkezi_(sheet, data) {
+  if (!sheet) {
+    return;
+  }
+
+  if (sheet.getMaxColumns() < 13) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), 13 - sheet.getMaxColumns());
+  }
+
+  sheet.getRange("A1:M35").clearContent();
+  sheet.getRange("A1").setValue("Mal Alım Aksiyon Merkezi");
+
+  sheet.getRange("A2").setValue("Uygun Alım Günleri");
+  writeTable_(
+    sheet,
+    3,
+    1,
+    [
+      "Tarih",
+      "Beklenen Giriş",
+      "Planlı Çıkış",
+      "Tahmini Bakiye",
+      "Alım Kapasitesi",
+      "Sinyal",
+    ],
+    buildBestWindowsTableRows_(data, 12),
+  );
+  sheet.getRange(4, 2, 12, 4).setNumberFormat("#,##0.00");
+
+  sheet.getRange("H2").setValue("Haftalık Alım Kapasitesi");
+  writeTable_(
+    sheet,
+    3,
+    8,
+    ["Hafta", "Haftalık Giriş", "Haftalık Çıkış", "Net", "Ort. Kapasite"],
+    buildWeeklyTableRows_(data),
+  );
+  sheet.getRange(4, 9, 4, 4).setNumberFormat("#,##0.00");
+
+  sheet.getRange("A18").setValue("Yaklaşan Tahsilatlar");
+  writeTable_(
+    sheet,
+    19,
+    1,
+    ["Kod", "Kaynak", "Vade", "Tutar", "Durum", "Gün Kaldı"],
+    buildUpcomingReceivablesRows_(data, 12),
+  );
+  sheet.getRange(20, 4, 12, 1).setNumberFormat("#,##0.00");
+
+  sheet.getRange("H18").setValue("Yaklaşan Ödemeler");
+  writeTable_(
+    sheet,
+    19,
+    8,
+    ["Kod", "Kurum", "Vade", "Tutar", "Öncelik", "Gün Kaldı"],
+    buildUpcomingDebtRows_(data, 12),
+  );
+  sheet.getRange(20, 11, 12, 1).setNumberFormat("#,##0.00");
+}
+
+function writeTable_(sheet, startRow, startColumn, headers, rows) {
+  sheet.getRange(startRow, startColumn, 1, headers.length).setValues([headers]);
+  var safeRows = rows.length ? rows : [emptyRow_(headers.length)];
+  sheet
+    .getRange(startRow + 1, startColumn, safeRows.length, headers.length)
+    .setValues(safeRows);
+}
+
+function emptyRow_(length) {
+  var row = [];
+  for (var i = 0; i < length; i++) {
+    row.push("");
+  }
+  return row;
+}
+
+function readDebtRecords_(sheet) {
+  if (!sheet) {
+    return [];
+  }
+  return readRecords_(sheet, function (row) {
+    return {
+      code: row[0],
+      party: row[2],
+      dueDate: parseTurkishDate_(row[4]),
+      amount: parseCurrency_(row[5]),
+      status: row[6],
+      priority: row[7],
+      warning: row[9],
+      nextAction: parseTurkishDate_(row[10]),
+      type: "Ödeme",
+    };
+  });
+}
+
+function readReceivableRecords_(sheet) {
+  if (!sheet) {
+    return [];
+  }
+  return readRecords_(sheet, function (row) {
+    return {
+      code: row[0],
+      party: row[1],
+      dueDate: parseTurkishDate_(row[4]),
+      amount: parseCurrency_(row[5]),
+      status: row[6],
+      priority: row[11],
+      warning: row[10],
+      nextAction: parseTurkishDate_(row[12]),
+      type: "Tahsilat",
+    };
+  });
+}
+
+function readRecords_(sheet, mapper) {
+  var lastRow = bulSonDoluKayitSatiri(sheet);
+  if (lastRow < CONFIG.targetDataStartRow) {
+    return [];
+  }
+  var rowCount = lastRow - CONFIG.targetDataStartRow + 1;
+  var values = sheet
+    .getRange(CONFIG.targetDataStartRow, 1, rowCount, sheet.getLastColumn())
+    .getDisplayValues();
+  var records = [];
+  for (var i = 0; i < values.length; i++) {
+    if (!values[i][0]) {
+      continue;
+    }
+    records.push(mapper(values[i]));
+  }
+  return records;
+}
+
+function parseCurrency_(value) {
+  var text = String(value || "")
+    .replace(/TL/g, "")
+    .replace(/\./g, "")
+    .replace(",", ".")
+    .replace(/[^0-9.-]/g, "");
+  var parsed = Number(text);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+function parseTurkishDate_(value) {
+  if (!value) {
+    return null;
+  }
+  if (
+    Object.prototype.toString.call(value) === "[object Date]" &&
+    !isNaN(value.getTime())
+  ) {
+    return startOfDay_(value);
+  }
+  var match = String(value).match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (!match) {
+    return null;
+  }
+  return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+}
+
+function startOfDay_(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays_(date, days) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+function dateKey_(date) {
+  return Utilities.formatDate(date, CONFIG.spreadsheetTimeZone, "yyyy-MM-dd");
+}
+
+function formatDateCell_(date) {
+  return date
+    ? Utilities.formatDate(date, CONFIG.spreadsheetTimeZone, "dd.MM.yyyy")
+    : "";
+}
+
+function sortByDate_(left, right) {
+  var leftValue = left.dueDate
+    ? left.dueDate.getTime()
+    : Number.MAX_SAFE_INTEGER;
+  var rightValue = right.dueDate
+    ? right.dueDate.getTime()
+    : Number.MAX_SAFE_INTEGER;
+  return leftValue - rightValue;
+}
+
+function daysBetween_(from, to) {
+  return Math.round((to.getTime() - from.getTime()) / 86400000);
+}
+
+function readCurrentCashFromCashflow_(ss) {
+  var sheet = ss.getSheetByName(CONFIG.cashflowSheetName);
+  if (!sheet) return 0;
+
+  var today = startOfDay_(new Date());
+  var todayStr = formatDateCell_(today);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 8) return 0;
+
+  var dates = sheet.getRange(8, 1, lastRow - 7, 1).getDisplayValues();
+  var kapanisValues = sheet
+    .getRange(8, CONFIG.cashflowCapanisColumn, lastRow - 7, 1)
+    .getDisplayValues();
+
+  for (var i = 0; i < dates.length; i++) {
+    if (dates[i][0] === todayStr) {
+      return parseCurrency_(kapanisValues[i][0]);
+    }
+  }
+  // fallback: first available row
+  return parseCurrency_(kapanisValues[0][0]);
+}
+
+function sumRecordsBetween_(records, startDate, endDate) {
+  return records.reduce(function (sum, record) {
+    if (
+      !record.dueDate ||
+      record.dueDate < startDate ||
+      record.dueDate > endDate
+    ) {
+      return sum;
+    }
+    if (record.type === "Tahsilat" && record.status === "Tahsil Edildi")
+      return sum;
+    if (record.type === "Ödeme" && record.status === "Ödendi") return sum;
+    return sum + record.amount;
+  }, 0);
+}
+
+function buildForwardProjection_(currentCash, debts, receivables) {
+  var today = startOfDay_(new Date());
+  var days = CONFIG.projectionDays;
+  var projection = [];
+  var balance = currentCash;
+
+  for (var d = 0; d <= days; d++) {
+    var date = addDays_(today, d);
+    var key = dateKey_(date);
+    var inflow = 0;
+    var outflow = 0;
+
+    receivables.forEach(function (r) {
+      if (
+        r.dueDate &&
+        dateKey_(r.dueDate) === key &&
+        r.status !== "Tahsil Edildi"
+      ) {
+        inflow += r.amount;
+      }
+    });
+    debts.forEach(function (r) {
+      if (r.dueDate && dateKey_(r.dueDate) === key && r.status !== "Ödendi") {
+        outflow += r.amount;
+      }
+    });
+
+    if (d > 0) {
+      balance = balance + inflow - outflow;
+    }
+
+    projection.push({
+      date: date,
+      dateKey: key,
+      day: d,
+      inflow: inflow,
+      outflow: outflow,
+      balance: balance,
+      purchaseCapacity: 0,
+      signal: "",
+    });
+  }
+
+  // Second pass: purchasing capacity = max you can spend today and not go below safetyBuffer in next N days
+  var lookAhead = CONFIG.purchaseLookAheadDays;
+  var buffer = CONFIG.safetyBuffer;
+  var peakCapacity = 0;
+
+  for (var i = 0; i < projection.length; i++) {
+    var minFuture = projection[i].balance;
+    for (
+      var j = i + 1;
+      j < Math.min(i + lookAhead + 1, projection.length);
+      j++
+    ) {
+      if (projection[j].balance < minFuture) {
+        minFuture = projection[j].balance;
+      }
+    }
+    projection[i].purchaseCapacity = Math.max(0, minFuture - buffer);
+    if (projection[i].purchaseCapacity > peakCapacity) {
+      peakCapacity = projection[i].purchaseCapacity;
+    }
+  }
+
+  // Third pass: signals based on peak
+  var threshold = peakCapacity * 0.5;
+  for (var k = 0; k < projection.length; k++) {
+    if (projection[k].purchaseCapacity >= threshold && threshold > 0) {
+      projection[k].signal = "Uygun Al";
+    } else if (projection[k].purchaseCapacity > 0) {
+      projection[k].signal = "Dikkatli";
+    } else {
+      projection[k].signal = "Bekle";
+    }
+  }
+
+  return projection;
+}
+
+function projectionBalanceAt_(projection, dayIndex) {
+  if (dayIndex >= projection.length) dayIndex = projection.length - 1;
+  return projection[dayIndex] ? projection[dayIndex].balance : 0;
+}
+
+function findBestPurchasingDays_(projection) {
+  return projection
+    .filter(function (p) {
+      return p.purchaseCapacity > 0;
+    })
+    .sort(function (a, b) {
+      return b.purchaseCapacity - a.purchaseCapacity;
+    });
+}
+
+function buildWeeklySummary_(projection) {
+  var weeks = [];
+  for (var w = 0; w < 4; w++) {
+    var start = w * 7;
+    var end = Math.min(start + 7, projection.length);
+    var weekInflow = 0;
+    var weekOutflow = 0;
+    var capacitySum = 0;
+    var count = 0;
+    for (var d = start; d < end; d++) {
+      weekInflow += projection[d].inflow;
+      weekOutflow += projection[d].outflow;
+      capacitySum += projection[d].purchaseCapacity;
+      count++;
+    }
+    weeks.push({
+      label: "Hafta " + (w + 1),
+      startDate: projection[start] ? projection[start].date : null,
+      inflow: weekInflow,
+      outflow: weekOutflow,
+      net: weekInflow - weekOutflow,
+      avgCapacity: count > 0 ? capacitySum / count : 0,
+    });
+  }
+  return weeks;
+}
+
+function buildBestWindowsTableRows_(data, limit) {
+  return data.bestWindows.slice(0, limit).map(function (p) {
+    return [
+      formatDateCell_(p.date),
+      p.inflow,
+      p.outflow,
+      p.balance,
+      p.purchaseCapacity,
+      p.signal,
+    ];
+  });
+}
+
+function buildUpcomingReceivablesRows_(data, limit) {
+  return data.receivables
+    .filter(function (r) {
+      return (
+        r.dueDate && r.dueDate >= data.today && r.status !== "Tahsil Edildi"
+      );
+    })
+    .sort(sortByDate_)
+    .slice(0, limit)
+    .map(function (r) {
+      return [
+        r.code,
+        r.party,
+        formatDateCell_(r.dueDate),
+        r.amount,
+        r.status,
+        daysBetween_(data.today, r.dueDate),
+      ];
+    });
+}
+
+function buildUpcomingDebtRows_(data, limit) {
+  return data.debts
+    .filter(function (r) {
+      return r.dueDate && r.dueDate >= data.today && r.status !== "Ödendi";
+    })
+    .sort(sortByDate_)
+    .slice(0, limit)
+    .map(function (r) {
+      return [
+        r.code,
+        r.party,
+        formatDateCell_(r.dueDate),
+        r.amount,
+        r.priority,
+        daysBetween_(data.today, r.dueDate),
+      ];
+    });
+}
+
+function buildWeeklyTableRows_(data) {
+  return data.weeklySummary.map(function (w) {
+    return [w.label, w.inflow, w.outflow, w.net, w.avgCapacity];
+  });
+}
+
+function tamBakimCalistir() {
+  var sourceSchemaResult = girisSemasiniYukselt(
+    SpreadsheetApp.getActiveSpreadsheet().getSheetByName(
+      CONFIG.sourceSheetName,
+    ),
+  );
+  var keyResult = kaliciAnahtarlaraGecisYap();
+  var timeResult = zamanDilimiVeTarihFormatlariniDuzelt();
+  var hardeningResult = sertlestirHedefSablonlari();
+  var validationResult = uygulaVeriDogrulamalari();
+  var dashboardResult = guclendirDashboardVeNakitAkisi();
+  var alertViewsResult = kurUyariGorunumleri();
+
+  return {
+    ok: true,
+    sourceSchema: sourceSchemaResult,
+    keys: keyResult,
+    dateTime: timeResult,
+    hardening: hardeningResult,
+    validations: validationResult,
+    dashboard: dashboardResult,
+    alertViews: alertViewsResult,
+  };
+}
+
+function menuGirisSemasiniYukselt() {
+  runMenuAction_(
+    "Hızlı Veri Girişi şeması yeni alanlarla yükseltilsin mi?",
+    "Giriş şeması yükseltildi.",
+    function () {
+      return girisSemasiniYukselt(
+        SpreadsheetApp.getActiveSpreadsheet().getSheetByName(
+          CONFIG.sourceSheetName,
+        ),
+      );
+    },
+  );
+}
+
+function menuVeriDogrulamalariniUygula() {
+  runMenuAction_(
+    "Açılır listeler ve tarih doğrulamaları uygulansın mı?",
+    "Veri doğrulamaları uygulandı.",
+    uygulaVeriDogrulamalari,
+  );
+}
+
+function menuDashboardVeNakitAkisiniGuclendir() {
+  runMenuAction_(
+    "Dashboard ve Nakit Akışı yeni takip kolonlarıyla güçlendirilsin mi?",
+    "Dashboard ve Nakit Akışı güçlendirildi.",
+    guclendirDashboardVeNakitAkisi,
+  );
+}
+
+function menuUyariGorunumleriniKur() {
+  runMenuAction_(
+    "Aksiyon Merkezi ve uyarı görünümleri kurulsun mu?",
+    "Uyarı görünümleri kuruldu.",
+    kurUyariGorunumleri,
+  );
+}
+
+function menuTamBakimCalistir() {
+  runMenuAction_(
+    "Tam bakım çalıştırılsın mı?",
+    "Tam bakım tamamlandı.",
+    tamBakimCalistir,
+  );
+}
+
+function menuHedefleriYenidenKur() {
+  runMenuAction_(
+    "Hedef tablolar yeniden kurulsun mu?",
+    "Hedef tablolar yeniden kuruldu.",
+    hedefleriYenidenKur,
+  );
+}
+
+function menuTarihBakimi() {
+  runMenuAction_(
+    "Zaman dilimi ve tarih biçimleri düzeltilelim mi?",
+    "Tarih ve saat bakımı tamamlandı.",
+    zamanDilimiVeTarihFormatlariniDuzelt,
+  );
+}
+
+function menuAnahtarBakimi() {
+  runMenuAction_(
+    "Kalıcı kayıt anahtarları kontrol edilip eksikler tamamlansın mı?",
+    "Kalıcı anahtar bakımı tamamlandı.",
+    kaliciAnahtarlaraGecisYap,
+  );
+}
+
+function menuSablonSertlestir() {
+  runMenuAction_(
+    "Hedef şablonları sertleştirilsin mi?",
+    "Şablon sertleştirme tamamlandı.",
+    sertlestirHedefSablonlari,
+  );
+}
+
+function runMenuAction_(question, successTitle, action) {
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.alert("Muhasebe Bakım", question, ui.ButtonSet.YES_NO);
+
+  if (response !== ui.Button.YES) {
+    ui.alert("İşlem iptal edildi.");
+    return;
+  }
+
+  var result = action();
+  ui.alert(successTitle, JSON.stringify(result, null, 2), ui.ButtonSet.OK);
+}
