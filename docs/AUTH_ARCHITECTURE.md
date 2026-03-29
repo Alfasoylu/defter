@@ -6,7 +6,6 @@
 - Kod Google hesabı ile çalışır, service account desteği yoktur.
 - clasp sadece geliştirme/deploy için kullanılır, runtime auth değildir.
 
-
 ## Node/Scripts Auth
 
 - Tüm dış scriptler (ör: upload-excel.js) Google Sheets API'ye **sadece service account** ile erişir.
@@ -27,7 +26,6 @@
 - Auth, Apps Script runtime tarafından otomatik olarak kullanıcı hesabı ile yönetilir (OAuth2, ScriptApp.getOAuthToken() veya service account kullanılmaz).
 - Geliştirme ve deploy için clasp kullanılır, ancak runtime'da kullanıcıdan ek auth gerekmez.
 
-
 ## 2. Node/Scripts Tarafı
 
 - Tüm dış scriptler (ör: upload-excel.js) Google Sheets API'ye erişmek için **yalnızca service account** kullanır.
@@ -40,7 +38,6 @@
 - Development: Kod geliştirme ve Apps Script deploy için clasp login gereklidir (kullanıcı OAuth ile).
 - Runtime: Dış scriptler sadece service account ile çalışır, kullanıcı OAuth tokenı gerekmez.
 - Service account dosyası ve env değişkenleri olmadan dış scriptler çalışmaz.
-
 
 ## 4. Güvenlik
 

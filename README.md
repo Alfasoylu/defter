@@ -42,15 +42,28 @@ SALES_REPORT_PATH=
 DRY_RUN=true
 ```
 
+## 6. Güvenlik ve OAuth2 Notu
 
-## 6. Güvenlik Notu
+- Gerçek OAuth client secret (creds.json) ve token.json **commit edilmez**.
+- creds.json (OAuth client credentials) ve token.json sadece localde tutulur, .gitignore ile korunur.
+- upload-excel.js artık OAuth2 (user-based) ile çalışır, refresh token ile sürekli login istemez.
+- İlk çalıştırmada kullanıcıdan yetki alınır, token.json kaydedilir.
+- Sonraki çalıştırmalarda otomatik refresh ile login gerekmez.
 
-- Gerçek OAuth client secret (creds.json), service account dosyası ve .env dosyaları **commit edilmez**.
-- creds.json (OAuth client credentials) sadece Apps Script geliştirme/deploy için kullanılır, **runtime'da dış scriptlerde kullanılmaz**.
-- Dış scriptler (ör: upload-excel.js) sadece service account ile çalışır.
-- Service account JSON dosyası repoya konmaz, .env ile path olarak referans verilir.
-- Google Sheet, service account'ın `client_email` adresiyle paylaşılmalıdır.
-- Repo içinde sadece örnek env (.env.example) bulunur.
+## 11. OAuth2 ile Çalıştırma
+
+1. creds.json dosyanı Google Cloud Console'dan indir ve workspace'e koy (repoya yazma).
+2. .env dosyanda OAUTH_CLIENT_SECRET_FILE ve OAUTH_TOKEN_FILE pathlerini belirt.
+3. İlk çalıştırmada şu komutu ver:
+
+```bash
+node scripts/upload-excel.js
+```
+
+4. Komut satırında çıkan linki aç, Google hesabınla yetki ver, kodu terminale gir.
+5. token.json kaydedilir, sonraki çalıştırmalarda otomatik kullanılır.
+
+Başarılı bağlantı için `[SUCCESS] ... yazıldı.` logunu görmelisin.
 
 ## 7. Örnek Veri Açıklaması
 
