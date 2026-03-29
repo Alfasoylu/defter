@@ -18,8 +18,10 @@ const SALES_FILE =
 const STOCK_FILE =
   process.env.STOCK_FILE_PATH ||
   path.join(ROOT, "docs", "stok-listesi-29.03.2026.xlsx");
-const OAUTH_CLIENT_SECRET_FILE = process.env.OAUTH_CLIENT_SECRET_FILE || path.join(ROOT, "creds.json");
-const OAUTH_TOKEN_FILE = process.env.OAUTH_TOKEN_FILE || path.join(ROOT, "token.json");
+const OAUTH_CLIENT_SECRET_FILE =
+  process.env.OAUTH_CLIENT_SECRET_FILE || path.join(ROOT, "creds.json");
+const OAUTH_TOKEN_FILE =
+  process.env.OAUTH_TOKEN_FILE || path.join(ROOT, "token.json");
 const SHEET_ID = process.env.SHEET_ID;
 const TEST_SHEET_ID = process.env.TEST_SHEET_ID;
 const DRY_RUN = process.env.DRY_RUN;
@@ -28,15 +30,11 @@ const ALLOW_PROD_WRITE = process.env.ALLOW_PROD_WRITE === "true";
 // Whitelist: sadece bu sheet id'lere yazılabilir
 const SHEET_ID_WHITELIST = [SHEET_ID, TEST_SHEET_ID].filter(Boolean);
 
-
-
-
 // Güvenlik: DRY_RUN, TEST_SHEET_ID, OAUTH_CLIENT_SECRET_FILE zorunlu
 function fail(msg) {
   console.error("[FATAL] " + msg);
   process.exit(1);
 }
-
 
 function getTargetSheetId() {
   if (typeof DRY_RUN === "undefined") fail("DRY_RUN env zorunlu (true/false)");
@@ -45,26 +43,31 @@ function getTargetSheetId() {
     return TEST_SHEET_ID;
   } else if (DRY_RUN === "false") {
     if (!SHEET_ID) fail("SHEET_ID env zorunlu (DRY_RUN=false)");
-    if (!ALLOW_PROD_WRITE) fail("Prod sheet'e yazmak için ALLOW_PROD_WRITE=true olmalı");
+    if (!ALLOW_PROD_WRITE)
+      fail("Prod sheet'e yazmak için ALLOW_PROD_WRITE=true olmalı");
     return SHEET_ID;
   } else {
     fail("DRY_RUN env değeri sadece 'true' veya 'false' olabilir");
   }
 }
 
-
-
 async function getAuth() {
   if (!OAUTH_CLIENT_SECRET_FILE || !fs.existsSync(OAUTH_CLIENT_SECRET_FILE)) {
-    fail("OAUTH_CLIENT_SECRET_FILE bulunamadı veya erişilemiyor: " + OAUTH_CLIENT_SECRET_FILE);
+    fail(
+      "OAUTH_CLIENT_SECRET_FILE bulunamadı veya erişilemiyor: " +
+        OAUTH_CLIENT_SECRET_FILE,
+    );
   }
   const credsRaw = fs.readFileSync(OAUTH_CLIENT_SECRET_FILE, "utf8");
-  const creds = JSON.parse(credsRaw).installed || JSON.parse(credsRaw).web || JSON.parse(credsRaw);
+  const creds =
+    JSON.parse(credsRaw).installed ||
+    JSON.parse(credsRaw).web ||
+    JSON.parse(credsRaw);
   const { client_id, client_secret, redirect_uris } = creds;
   const oAuth2Client = new google.auth.OAuth2(
     client_id,
     client_secret,
-    (redirect_uris && redirect_uris[0]) || "http://localhost"
+    (redirect_uris && redirect_uris[0]) || "http://localhost",
   );
 
   // Token varsa yükle
@@ -76,8 +79,12 @@ async function getAuth() {
       try {
         const newToken = await oAuth2Client.refreshAccessToken();
         oAuth2Client.setCredentials(newToken.credentials);
-        fs.writeFileSync(OAUTH_TOKEN_FILE, JSON.stringify(newToken.credentials, null, 2));
+        fs.writeFileSync(
+          OAUTH_TOKEN_FILE,
+          JSON.stringify(newToken.credentials, null, 2),
+        );
         console.log("[INFO] Token otomatik yenilendi.");
+        return oAuth2Client;
       } catch (e) {
         fail("Refresh token ile otomatik yenileme başarısız: " + e.message);
       }
@@ -89,13 +96,20 @@ async function getAuth() {
   const authUrl = oAuth2Client.generateAuthUrl({
     access_type: "offline",
     scope: ["https://www.googleapis.com/auth/spreadsheets"],
-    prompt: "consent"
+    prompt: "consent",
   });
   console.log("Yetkilendirme için şu linki açın:", authUrl);
   const readline = require("readline");
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const code = await new Promise((resolve) => rl.question("Kodu girin: ", resolve));
-  rl.close();
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const code = await new Promise((resolve) => {
+    rl.question("Kodu girin: ", (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
   try {
     const { tokens } = await oAuth2Client.getToken(code.trim());
     oAuth2Client.setCredentials(tokens);
@@ -105,10 +119,9 @@ async function getAuth() {
   } catch (e) {
     fail("Token alma başarısız: " + e.message);
   }
-
+}
 
 // (Service account getAuth fonksiyonu tamamen kaldırıldı, sadece OAuth2 client ile çalışan fonksiyon yukarıda var)
-
 
 function readExcel(filePath) {
   const wb = XLSX.readFile(filePath);
@@ -189,9 +202,13 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
     const startRow = i + 1;
     const range = `'${sheetName}'!A${startRow}`;
     if (DRY_RUN === "true") {
-      console.log(`[DRY RUN] mode: dry-run | target spreadsheet: ${spreadsheetId} | tab: ${sheetName} | rows: ${batch.length}`);
+      console.log(
+        `[DRY RUN] mode: dry-run | target spreadsheet: ${spreadsheetId} | tab: ${sheetName} | rows: ${batch.length}`,
+      );
     } else {
-      console.log(`[REAL RUN] mode: real-run | target spreadsheet: ${spreadsheetId} | tab: ${sheetName} | rows: ${batch.length}`);
+      console.log(
+        `[REAL RUN] mode: real-run | target spreadsheet: ${spreadsheetId} | tab: ${sheetName} | rows: ${batch.length}`,
+      );
       try {
         await sheets.spreadsheets.values.update({
           spreadsheetId,
@@ -199,20 +216,27 @@ async function writeToSheet(sheets, spreadsheetId, sheetName, rows) {
           valueInputOption: "RAW",
           requestBody: { values: batch },
         });
-        console.log(`[SUCCESS] ${sheetName} [${i + 1}-${Math.min(i + BATCH, rows.length)} / ${rows.length}] yazıldı.`);
+        console.log(
+          `[SUCCESS] ${sheetName} [${i + 1}-${Math.min(i + BATCH, rows.length)} / ${rows.length}] yazıldı.`,
+        );
       } catch (err) {
-        console.error(`[FAIL] ${sheetName} [${i + 1}-${Math.min(i + BATCH, rows.length)} / ${rows.length}]: ${err.message}`);
+        console.error(
+          `[FAIL] ${sheetName} [${i + 1}-${Math.min(i + BATCH, rows.length)} / ${rows.length}]: ${err.message}`,
+        );
       }
     }
   }
-  console.log(`  ✓ ${sheetName}: ${rows.length - 1} veri satırı ${DRY_RUN === "true" ? "(DRY RUN)" : "yazıldı"}`);
+  console.log(
+    `  ✓ ${sheetName}: ${rows.length - 1} veri satırı ${DRY_RUN === "true" ? "(DRY RUN)" : "yazıldı"}`,
+  );
 }
 
 async function main() {
   // Çalıştırma öncesi self-check ve özet log
   const mode = DRY_RUN === "true" ? "dry-run" : "real-run";
   const spreadsheetId = getTargetSheetId();
-  const credsExists = OAUTH_CLIENT_SECRET_FILE && fs.existsSync(OAUTH_CLIENT_SECRET_FILE);
+  const credsExists =
+    OAUTH_CLIENT_SECRET_FILE && fs.existsSync(OAUTH_CLIENT_SECRET_FILE);
   const tokenExists = OAUTH_TOKEN_FILE && fs.existsSync(OAUTH_TOKEN_FILE);
   const prodWriteAllowed = ALLOW_PROD_WRITE === true;
   console.log("\n--- ÇALIŞTIRMA ÖZETİ ---");
@@ -222,10 +246,12 @@ async function main() {
   console.log(`token file exists: ${tokenExists ? "yes" : "NO"}`);
   console.log(`prod write allowed: ${prodWriteAllowed ? "yes" : "no"}`);
   if (!credsExists) {
-    console.log("UYARI: OAuth client secret dosyası bulunamadı, gerçek çalışma yapılamaz.");
+    console.log(
+      "UYARI: OAuth client secret dosyası bulunamadı, gerçek çalışma yapılamaz.",
+    );
   }
 
-    const auth = await getAuth(); // (Service account getAuth fonksiyonu kaldırıldı, bu satırda hata verecektir)
+  const auth = await getAuth(); // (Service account getAuth fonksiyonu kaldırıldı, bu satırda hata verecektir)
   const sheets = google.sheets({ version: "v4", auth });
 
   // --- TEST YAZMA SEKME KONTROLÜ ---
@@ -248,17 +274,35 @@ async function main() {
   // Filter to keep only relevant columns (reduce payload)
   const stockHeaders = stockData[0];
   const keepCols = [
-    "Ürün Kodu", "Ürün Adı", "Barkod", "Kategori", "Grup", "Marka",
-    "Stok1", "Stok2", "buying_price", "KDV", "Para Birimi",
-    "Fiyat1", "Trendyol Satış Fiyatı", "HB Fiyat", "N11 Fiyat",
-    "Kritik Stok", "Durum", "Menşei"
+    "Ürün Kodu",
+    "Ürün Adı",
+    "Barkod",
+    "Kategori",
+    "Grup",
+    "Marka",
+    "Stok1",
+    "Stok2",
+    "buying_price",
+    "KDV",
+    "Para Birimi",
+    "Fiyat1",
+    "Trendyol Satış Fiyatı",
+    "HB Fiyat",
+    "N11 Fiyat",
+    "Kritik Stok",
+    "Durum",
+    "Menşei",
   ];
-  const keepIdx = keepCols.map(name => stockHeaders.indexOf(name)).filter(i => i >= 0);
-  const filteredStock = stockData.map(row => keepIdx.map(i => row[i] != null ? row[i] : ""));
+  const keepIdx = keepCols
+    .map((name) => stockHeaders.indexOf(name))
+    .filter((i) => i >= 0);
+  const filteredStock = stockData.map((row) =>
+    keepIdx.map((i) => (row[i] != null ? row[i] : "")),
+  );
   console.log(`Filtrelenmiş kolon: ${keepIdx.length} / ${stockHeaders.length}`);
   await writeToSheet(sheets, spreadsheetId, testTab, filteredStock);
 
   console.log("\n═══ TAMAMLANDI (TEST) ═══\n");
 }
 
-main().catch(e => fail(e.message));
+main().catch((e) => fail(e.message));
