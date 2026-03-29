@@ -423,12 +423,12 @@ async function main() {
     if (seenSkus.has(urunKodu)) { skipped.push({i, reason: "Duplicate ürün kodu"}); continue; }
     seenSkus.add(urunKodu);
     cleanRows.push([urunKodu, urunAdi, stok1]);
-    if (cleanRows.length >= 20) break;
+    if (cleanRows.length >= 100) break;
   }
   // Header ekle
   const finalRows = [["Ürün Kodu", "Ürün Adı", "Stok1"], ...cleanRows];
 
-  // Preview
+  // Veri kalite kontrol ve snapshot
   console.log("B) Toplam kaynak satır:", stockData.length - 1);
   console.log("C) İşlenen satır sayısı:", cleanRows.length);
   console.log("D) Atlanan satır sayısı:", skipped.length);
@@ -437,13 +437,22 @@ async function main() {
     skipped.forEach(s => { reasons[s.reason] = (reasons[s.reason] || 0) + 1; });
     Object.entries(reasons).forEach(([r, n]) => console.log(`   ${r}: ${n}`));
   }
-  console.log("E) Preview örnekleri:");
-  for (let i = 0; i < Math.min(5, cleanRows.length); i++) {
-    console.log(cleanRows[i]);
-  }
+  // Write öncesi snapshot/log
+  const writeStart = 2;
+  const writeEnd = 1 + cleanRows.length;
+  const writeRange = `Stok Envanter!A${writeStart}:C${writeEnd}`;
+  console.log("--- WRITE SNAPSHOT ---");
+  console.log(`Target tab: Stok Envanter`);
+  console.log(`Exact write range: ${writeRange}`);
+  console.log(`Satır sayısı: ${cleanRows.length}`);
+  console.log(`Kolonlar: Ürün Kodu, Ürün Adı, Stok1`);
+  console.log("İlk 5 örnek:");
+  for (let i = 0; i < Math.min(5, cleanRows.length); i++) console.log(cleanRows[i]);
+  console.log("Son 5 örnek:");
+  for (let i = Math.max(0, cleanRows.length - 5); i < cleanRows.length; i++) console.log(cleanRows[i]);
 
   // Write & doğrulama
-  await writeToSheet(sheets, spreadsheetId, prodTestTab, finalRows);
+  await writeToSheet(sheets, spreadsheetId, prodTestTab, finalRows, { batchSize: 100 });
 
   console.log("\nF) Write/read sonucu ve kalan riskler üstte loglandı.");
   console.log("G) Kalan riskler:");
@@ -452,7 +461,7 @@ async function main() {
   console.log("- Google Sheets API sayısal değerleri string döndürdüğü için normalize karşılaştırma zorunlu.");
   console.log("- Formül kolonlarına yazma hâlâ engelli.");
   console.log("- .env ve token dosyası güvenli tutulmalı.");
-  console.log("\n═══ TAMAMLANDI (GERÇEK VERİ BATCH IMPORT) ═══\n");
+  console.log("\n═══ TAMAMLANDI (100'LÜK GERÇEK VERİ BATCH IMPORT) ═══\n");
 }
 
 main().catch((e) => fail(e.message));
