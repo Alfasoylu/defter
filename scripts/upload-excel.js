@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Excel dosyalarini Google Sheets staging alanlarina yazar.
- * clasp OAuth tokenlarini kullanarak Google Sheets API ile dogrudan yazar.
+* Service account ile Google Sheets API'ye veri yazar.
  * Kullanim: node scripts/upload-excel.js
  */
 
@@ -27,14 +27,16 @@ function fail(msg) {
 }
 
 function getTargetSheetId() {
-  if (!DRY_RUN) fail("DRY_RUN env zorunlu (true/false)");
+  if (typeof DRY_RUN === "undefined") fail("DRY_RUN env zorunlu (true/false)");
   if (DRY_RUN === "true") {
     if (!TEST_SHEET_ID) fail("TEST_SHEET_ID env zorunlu (DRY_RUN=true)");
     return TEST_SHEET_ID;
-  } else {
+  } else if (DRY_RUN === "false") {
     if (!SHEET_ID) fail("SHEET_ID env zorunlu (DRY_RUN=false)");
     if (!ALLOW_PROD_WRITE) fail("Prod sheet'e yazmak için ALLOW_PROD_WRITE=true olmalı");
     return SHEET_ID;
+  } else {
+    fail("DRY_RUN env değeri sadece 'true' veya 'false' olabilir");
   }
 }
 
